@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Frontend build output
+/frontend/dist/
+
+# Local environment and database files
+.env
+.env.*
+!.env.example
+/backend/sentinel_gateway.db
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,119 @@
+import { create } from 'zustand';
+import { AlertItem, TrafficLogItem, UserProfile, UserRole } from '../types/api';
+
+interface ToastNotification {
+  id: string;
+  title: string;
+  message: string;
+  severity: 'critical' | 'high' | 'medium' | 'info';
+}
+
+interface GatewayState {
+  token: string | null;
+  user: UserProfile | null;
+  gatewayEnabled: boolean;
+  timeRange: '15m' | '1h' | '24h' | '7d';
+  autoRefresh: boolean;
+  globalSearch: string;
+  selectedRequestId: number | null;
+  liveStreamPaused: boolean;
+  liveTraffic: TrafficLogItem[];
+  liveAlerts: AlertItem[];
+  toasts: ToastNotification[];
+  roleGuideOpen: boolean;
+
+  setAuth: (token: string, user: UserProfile) => void;
+  logout: () => void;
+  setGatewayEnabled: (enabled: boolean) => void;
+  setTimeRange: (range: '15m' | '1h' | '24h' | '7d') => void;
+  setAutoRefresh: (auto: boolean) => void;
+  setGlobalSearch: (q: string) => void;
+  openRequestDrawer: (logId: number) => void;
+  closeRequestDrawer: () => void;
+  setLiveStreamPaused: (paused: boolean) => void;
+  pushLiveTraffic: (item: TrafficLogItem) => void;
+  pushLiveAlert: (alert: AlertItem) => void;
+  addToast: (toast: Omit<ToastNotification, 'id'>) => void;
+  dismissToast: (id: string) => void;
+  setRoleGuideOpen: (open: boolean) => void;
+  canMutate: (allowedRoles?: UserRole[]) => boolean;
+}
+
+const DEFAULT_USER: UserProfile = {
+  id: 1,
+  email: 'admin@sentinel.local',
+  full_name: 'Elena Rostova (Platform Admin)',
+  role: 'admin',
+  is_active: true,
+};
+
+export const useGatewayStore = create<GatewayState>((set, get) => ({
+  token: localStorage.getItem('sentinel_token'),
+  user: JSON.parse(localStorage.getItem('sentinel_user') || JSON.stringify(DEFAULT_USER)),
+  gatewayEnabled: true,
+  timeRange: '24h',
+  autoRefresh: true,
+  globalSearch: '',
+  selectedRequestId: null,
+  liveStreamPaused: false,
+  liveTraffic: [],
+  liveAlerts: [],
+  toasts: [],
+  roleGuideOpen: false,
+
+  setAuth: (token, user) => {
+    localStorage.setItem('sentinel_token', token);
+    localStorage.setItem('sentinel_user', JSON.stringify(user));
+    set({ token, user });
+  },
+
+  logout: () => {
+    localStorage.removeItem('sentinel_token');
+    localStorage.removeItem('sentinel_user');
+    set({ token: null, user: null });
+  },
+
+  setGatewayEnabled: (gatewayEnabled) => set({ gatewayEnabled }),
+  setTimeRange: (timeRange) => set({ timeRange }),
+  setAutoRefresh: (autoRefresh) => set({ autoRefresh }),
+  setGlobalSearch: (globalSearch) => set({ globalSearch }),
+  openRequestDrawer: (selectedRequestId) => set({ selectedRequestId }),
+  closeRequestDrawer: () => set({ selectedRequestId: null }),
+  setLiveStreamPaused: (liveStreamPaused) => set({ liveStreamPaused }),
+
+  pushLiveTraffic: (item) => {
+    if (get().liveStreamPaused) return;
+    set((state) => ({
+      liveTraffic: [item, ...state.liveTraffic.filter((x) => x.request_id !== item.request_id)].slice(0, 120),
+    }));
+  },
+
+  pushLiveAlert: (alert) => {
+    set((state) => ({
+      liveAlerts: [alert, ...state.liveAlerts.filter((a) => a.id !== alert.id)].slice(0, 50),
+    }));
+    get().addToast({
+      title: `[${alert.owasp_id}] ${alert.severity.toUpperCase()} ALERT`,
+      message: `${alert.title} (${alert.client_ip})`,
+      severity: alert.severity === 'critical' ? 'critical' : alert.severity === 'high' ? 'high' : 'medium',
+    });
+  },
+
+  addToast: (toast) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    set((state) => ({ toasts: [...state.toasts.slice(-3), { ...toast, id }] }));
+    setTimeout(() => {
+      get().dismissToast(id);
+    }, 5500);
+  },
+
+  dismissToast: (id) =>
+    set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+  setRoleGuideOpen: (roleGuideOpen) => set({ roleGuideOpen }),
+
+  canMutate: (allowedRoles = ['admin', 'analyst', 'developer']) => {
+    const role = get().user?.role || 'viewer';
+    return allowedRoles.includes(role);
+  },
+}));
