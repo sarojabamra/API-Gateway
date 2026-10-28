@@ -12,7 +12,6 @@ import { InventoryPage } from './pages/InventoryPage';
 import { AuthSettingsPage } from './pages/AuthSettingsPage';
 import { BlocklistPage } from './pages/BlocklistPage';
 import { AnalyticsPage } from './pages/AnalyticsPage';
-import { OwaspCoveragePage } from './pages/OwaspCoveragePage';
 import { AttackSimulatorPage } from './pages/AttackSimulatorPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsUsersPage } from './pages/SettingsUsersPage';
@@ -34,7 +33,7 @@ export const App: React.FC = () => {
           <Route path="auth-settings" element={<AuthSettingsPage />} />
           <Route path="blocklist" element={<BlocklistPage />} />
           <Route path="analytics" element={<AnalyticsPage />} />
-          <Route path="owasp" element={<OwaspCoveragePage />} />
+          <Route path="owasp" element={<AttackSimulatorPage />} />
           <Route path="simulator" element={<AttackSimulatorPage />} />
           <Route path="reports" element={<ReportsPage />} />
           <Route path="settings" element={<SettingsUsersPage />} />

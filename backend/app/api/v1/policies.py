@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import Policy, User
+from app.models import Policy, User, to_ist_iso
 from app.schemas import PolicyCreate, PolicyUpdate
 from app.api.v1.deps import require_roles
 
@@ -26,7 +26,7 @@ def list_policies(session: Session = Depends(get_session)):
             "mode": p.mode,  # enforce | monitor
             "config": json.loads(p.config_json or "{}"),
             "enabled": p.enabled,
-            "updated_at": p.updated_at.isoformat(),
+            "updated_at": to_ist_iso(p.updated_at),
         }
         for p in policies
     ]
@@ -100,7 +100,7 @@ def update_policy(
         "mode": pol.mode,
         "config": json.loads(pol.config_json or "{}"),
         "enabled": pol.enabled,
-        "updated_at": pol.updated_at.isoformat(),
+        "updated_at": to_ist_iso(pol.updated_at),
     }
 
 

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { CheckCircle2, XCircle, KeyRound, ShieldCheck, Copy, Ban, Sparkles } from 'lucide-react';
+import { CheckCircle2, XCircle, KeyRound, ShieldCheck, Copy, Ban, Sparkles, Save } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 
 export const AuthSettingsPage: React.FC = () => {
-  const { addToast, canMutate } = useGatewayStore();
+  const { addToast, canMutate, selectedProjectId, selectedProjectName } = useGatewayStore();
   const [jwtConfig, setJwtConfig] = useState<any>({});
   const [apiKeys, setApiKeys] = useState<any[]>([]);
   const [revokedTokens, setRevokedTokens] = useState<any[]>([]);
@@ -13,17 +13,32 @@ export const AuthSettingsPage: React.FC = () => {
   const [newKeyName, setNewKeyName] = useState('Partner Analytics Service Key');
   const [newlyCreatedRawKey, setNewlyCreatedRawKey] = useState<string | null>(null);
   const [revokeJtiInput, setRevokeJtiInput] = useState('');
+  const [projectJwtConfig, setProjectJwtConfig] = useState<any>({});
+  const [projectAlgorithm, setProjectAlgorithm] = useState('HS256');
+  const [projectVerificationKey, setProjectVerificationKey] = useState('');
+  const [projectIssuer, setProjectIssuer] = useState('');
+  const [projectAudience, setProjectAudience] = useState('');
+  const [projectRequireJti, setProjectRequireJti] = useState(false);
+  const [savingProjectJwt, setSavingProjectJwt] = useState(false);
 
   const fetchAll = async () => {
     try {
-      const [cfg, keys, rev] = await Promise.all([
+      const [cfg, keys, rev, projectCfg] = await Promise.all([
         apiFetch('/auth/jwt-config'),
         apiFetch('/auth/api-keys'),
         apiFetch('/auth/revoked-tokens'),
+        selectedProjectId
+          ? apiFetch(`/auth/upstreams/${selectedProjectId}/jwt-config`)
+          : Promise.resolve({}),
       ]);
       setJwtConfig(cfg);
       setApiKeys(keys || []);
       setRevokedTokens(rev || []);
+      setProjectJwtConfig(projectCfg || {});
+      setProjectAlgorithm(projectCfg?.allowed_algorithms?.[0] || 'HS256');
+      setProjectIssuer(projectCfg?.issuer || '');
+      setProjectAudience(projectCfg?.audience || '');
+      setProjectRequireJti(Boolean(projectCfg?.require_jti));
     } catch {
       // ignore
     }
@@ -33,7 +48,7 @@ export const AuthSettingsPage: React.FC = () => {
     fetchAll();
     // Mint a default valid user token on first load so the Token Tester is ready immediately
     handleMintPreset('valid_user');
-  }, []);
+  }, [selectedProjectId]);
 
   const handleMintPreset = async (preset: string) => {
     try {
@@ -53,11 +68,42 @@ export const AuthSettingsPage: React.FC = () => {
     try {
       const res = await apiFetch('/auth/token-test', {
         method: 'POST',
-        body: JSON.stringify({ token: testToken }),
+        body: JSON.stringify({ token: testToken, upstream_id: selectedProjectId }),
       });
       setTestResult(res);
     } catch (err: any) {
       addToast({ title: 'Validation Error', message: err.message, severity: 'high' });
+    }
+  };
+
+  const handleSaveProjectJwt = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedProjectId) return;
+    setSavingProjectJwt(true);
+    try {
+      const res = await apiFetch(`/auth/upstreams/${selectedProjectId}/jwt-config`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: true,
+          allowed_algorithms: [projectAlgorithm],
+          verification_key: projectVerificationKey || undefined,
+          issuer: projectIssuer || null,
+          audience: projectAudience || null,
+          require_jti: projectRequireJti,
+          leeway_seconds: 10,
+        }),
+      });
+      setProjectJwtConfig(res);
+      setProjectVerificationKey('');
+      addToast({
+        title: 'Project JWT Verification Saved',
+        message: `${selectedProjectName} tokens will now be verified with this project's signing configuration.`,
+        severity: 'info',
+      });
+    } catch (err: any) {
+      addToast({ title: 'JWT Configuration Failed', message: err.message, severity: 'high' });
+    } finally {
+      setSavingProjectJwt(false);
     }
   };
 
@@ -139,6 +185,106 @@ export const AuthSettingsPage: React.FC = () => {
           Enforces OWASP API2 (Broken Authentication) via algorithm pinning, `alg=none` rejection, `kid` allowlisting, temporal leeway, `iss`/`aud` binding, and JTI revocation.
         </p>
       </div>
+
+      {/* Per-project JWT verification settings */}
+      <form
+        onSubmit={handleSaveProjectJwt}
+        className="bg-slate-900/90 border border-cyan-500/30 rounded-xl p-5 space-y-4"
+      >
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <ShieldCheck className="w-5 h-5 text-cyan-400 mt-0.5" />
+            <div>
+              <h3 className="text-sm font-bold text-white">
+                JWT Verification for {selectedProjectName || 'Selected Project'}
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Configure the key and claims used by this backend to sign access tokens. The key is stored server-side and is never returned to the browser.
+              </p>
+            </div>
+          </div>
+          <span className={`px-2.5 py-1 rounded-full text-[10px] font-mono border ${
+            projectJwtConfig.enabled
+              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+              : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+          }`}>
+            {projectJwtConfig.enabled ? 'PROJECT KEY CONFIGURED' : 'USING DEFAULT GATEWAY KEY'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3 text-xs">
+          <div>
+            <label className="block text-slate-400 mb-1">JWT Algorithm</label>
+            <select
+              value={projectAlgorithm}
+              onChange={(e) => setProjectAlgorithm(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
+            >
+              <option value="HS256">HS256</option>
+              <option value="RS256">RS256</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="block text-slate-400 mb-1">
+              {projectAlgorithm === 'RS256'
+                ? 'Public Certificate / PEM (or leave blank for Firebase Auto-Fetch)'
+                : 'Shared JWT Secret'}
+            </label>
+            <input
+              type="text"
+              value={projectVerificationKey}
+              onChange={(e) => setProjectVerificationKey(e.target.value)}
+              required={!projectJwtConfig.has_verification_key && projectAlgorithm !== 'RS256'}
+              placeholder={
+                projectAlgorithm === 'RS256'
+                  ? 'Paste X.509 certificate, Google JSON, or leave blank for Firebase Auto-Certs'
+                  : projectJwtConfig.has_verification_key
+                    ? 'Key already saved — leave blank to keep it'
+                    : 'Enter the backend JWT verification key'
+              }
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-slate-400 mb-1">Issuer (`iss`) — Optional</label>
+            <input
+              value={projectIssuer}
+              onChange={(e) => setProjectIssuer(e.target.value)}
+              placeholder="Leave blank if token has no iss"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-slate-400 mb-1">Audience (`aud`) — Optional</label>
+            <input
+              value={projectAudience}
+              onChange={(e) => setProjectAudience(e.target.value)}
+              placeholder="Leave blank if token has no aud"
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <label className="inline-flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={projectRequireJti}
+              onChange={(e) => setProjectRequireJti(e.target.checked)}
+              className="rounded border-slate-700 bg-slate-950"
+            />
+            Require a `jti` claim for token revocation
+          </label>
+          <button
+            type="submit"
+            disabled={savingProjectJwt || !canMutate(['admin', 'developer'])}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs disabled:opacity-50"
+          >
+            <Save className="w-3.5 h-3.5" />
+            {savingProjectJwt ? 'Saving...' : 'Save Project JWT Settings'}
+          </button>
+        </div>
+      </form>
 
       {/* Interactive 8-Step JWT Token Tester & Minting Workbench */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 space-y-4">

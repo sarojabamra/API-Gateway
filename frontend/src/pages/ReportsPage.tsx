@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Download, Printer, ShieldCheck } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, formatDateTimeIST } from '../lib/api';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
 
 export const ReportsPage: React.FC = () => {
@@ -84,7 +84,7 @@ export const ReportsPage: React.FC = () => {
               API Security & Traffic Summary
             </h2>
             <p className="text-xs font-mono text-slate-400 mt-0.5">
-              Generated: {report?.generated_at ? new Date(report.generated_at).toLocaleString() : ''} · Time Window: {timeRange}
+              Generated: {report?.generated_at ? formatDateTimeIST(report.generated_at) : ''} · Time Window: {timeRange}
             </p>
           </div>
 

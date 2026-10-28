@@ -5,7 +5,7 @@ import { useGatewayStore } from '../store/useGatewayStore';
 import { MethodBadge, OwaspBadge } from '../components/shared/Badges';
 
 export const RateLimitsPage: React.FC = () => {
-  const { addToast, canMutate } = useGatewayStore();
+  const { addToast, canMutate, selectedProjectId, selectedProjectName } = useGatewayStore();
   const [data, setData] = useState<any | null>(null);
   const [burstPath, setBurstPath] = useState('/coupons/redeem');
   const [burstMethod, setBurstMethod] = useState('POST');
@@ -15,7 +15,8 @@ export const RateLimitsPage: React.FC = () => {
 
   const fetchRateLimits = async () => {
     try {
-      const res = await apiFetch('/ratelimits');
+      if (!selectedProjectId) return;
+      const res = await apiFetch(`/ratelimits?upstream_id=${selectedProjectId}`);
       setData(res);
     } catch {
       // ignore
@@ -24,7 +25,15 @@ export const RateLimitsPage: React.FC = () => {
 
   useEffect(() => {
     fetchRateLimits();
-  }, []);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    const firstRoute = data?.route_limits?.[0];
+    if (firstRoute) {
+      setBurstMethod(firstRoute.method);
+      setBurstPath(firstRoute.path_pattern.replace(/\{[^}]+\}/g, '101'));
+    }
+  }, [data?.route_limits?.[0]?.id]);
 
   const handleUpdateRouteLimit = async (route: any, rpm: number, burst: number) => {
     try {
@@ -54,6 +63,7 @@ export const RateLimitsPage: React.FC = () => {
       const res = await apiFetch('/ratelimits/test-burst', {
         method: 'POST',
         body: JSON.stringify({
+          upstream_id: selectedProjectId,
           path: burstPath,
           method: burstMethod,
           request_count: burstCount,
@@ -79,7 +89,7 @@ export const RateLimitsPage: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">
-            Rate Limits, Token Buckets & Velocity Studio
+            {selectedProjectName || 'Project'} Rate Limits & Velocity Tests
           </h1>
           <p className="text-xs text-slate-400 mt-0.5">
             Hybrid <strong>Sliding Window Counter</strong> (sustained RPM) + <strong>Token Bucket</strong> (burst capacity) for OWASP API4 & API6 protection.
@@ -116,9 +126,14 @@ export const RateLimitsPage: React.FC = () => {
                 }}
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white font-mono"
               >
-                <option value="POST:/coupons/redeem">POST /gw/coupons/redeem (Sensitive: 6 RPM / 4 Burst)</option>
-                <option value="GET:/products">GET /gw/products (Standard: 60 RPM / 20 Burst)</option>
-                <option value="GET:/users/me">GET /gw/users/me (Profile: 60 RPM / 15 Burst)</option>
+                {(data?.route_limits || []).map((route: any) => {
+                  const concretePath = route.path_pattern.replace(/\{[^}]+\}/g, '101');
+                  return (
+                    <option key={route.id} value={`${route.method}:${concretePath}`}>
+                      {route.method} {concretePath} ({route.rate_limit_rpm} RPM / {route.burst_capacity} burst)
+                    </option>
+                  );
+                })}
               </select>
             </div>
             <div>

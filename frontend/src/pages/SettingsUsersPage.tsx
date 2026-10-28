@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Users, RotateCcw, Plus, CheckCircle2 } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, formatDateTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 
 export const SettingsUsersPage: React.FC = () => {
@@ -181,7 +181,7 @@ export const SettingsUsersPage: React.FC = () => {
               <th className="py-3 px-4">Name</th>
               <th className="py-3 px-3">Email</th>
               <th className="py-3 px-3">RBAC Role</th>
-              <th className="py-3 px-3">Last Login</th>
+              <th className="py-3 px-3">Last Login (IST)</th>
               <th className="py-3 px-4 text-right">Modify Role (Admin)</th>
             </tr>
           </thead>
@@ -196,7 +196,7 @@ export const SettingsUsersPage: React.FC = () => {
                   </span>
                 </td>
                 <td className="py-3 px-3 font-mono text-slate-400">
-                  {u.last_login_at ? new Date(u.last_login_at).toLocaleString() : 'Never'}
+                  {u.last_login_at ? formatDateTimeIST(u.last_login_at) : 'Never'}
                 </td>
                 <td className="py-3 px-4 text-right">
                   <select

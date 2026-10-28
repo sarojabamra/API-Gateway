@@ -36,6 +36,7 @@ class BehavioralTracker:
     def evaluate(self, log: RequestLog, anomaly_zscore: float = 0.0) -> List[Dict[str, Any]]:
         now = time.time()
         ip = log.client_ip
+        scope_key = f"{log.upstream_id or 1}:{ip}"
         sub = log.user_sub or ip
         path = log.path
         reason = log.block_reason or ""
@@ -53,9 +54,9 @@ class BehavioralTracker:
 
         # 2. Expired or Revoked Token Reuse (API2 - Medium/High)
         if any(code in reason for code in ("jwt_revoked", "jwt_expired")):
-            hits = self._prune_ts(self.revoked_token_hits.get(ip, []), 300, now)
+            hits = self._prune_ts(self.revoked_token_hits.get(scope_key, []), 300, now)
             hits.append(now)
-            self.revoked_token_hits[ip] = hits
+            self.revoked_token_hits[scope_key] = hits
             triggered.append({
                 "type": "token_reuse",
                 "owasp_id": "API2",
@@ -65,63 +66,65 @@ class BehavioralTracker:
             })
 
         # 3. Brute Force Login & Credential Stuffing (API2 - High)
-        if path.endswith("/auth/login") and log.status_code == 401:
-            fails = self._prune_ts(self.login_failures.get(ip, []), 60, now)
-            fails.append(now)
-            self.login_failures[ip] = fails
+        if log.status_code == 401 or path.endswith("/auth/login") or "login" in path.lower():
+            if log.status_code == 401 or "invalid" in reason.lower() or "brute" in reason.lower():
+                fails = self._prune_ts(self.login_failures.get(scope_key, []), 60, now)
+                fails.append(now)
+                self.login_failures[scope_key] = fails
 
-            if log.request_body_preview:
-                try:
-                    body = json.loads(log.request_body_preview)
-                    uname = str(body.get("username", ""))
-                    if uname:
-                        u_map = self._prune_dict(self.login_usernames.get(ip, {}), 300, now)
-                        u_map[uname] = now
-                        self.login_usernames[ip] = u_map
-                        if len(u_map) >= 6:
-                            triggered.append({
-                                "type": "credential_stuffing",
-                                "owasp_id": "API2",
-                                "severity": "high",
-                                "title": f"Credential Stuffing Attack ({len(u_map)} distinct accounts)",
-                                "description": f"Source IP {ip} attempted authentication against {len(u_map)} distinct usernames within 5 minutes on /auth/login.",
-                            })
-                except Exception:
-                    pass
+                if log.request_body_preview:
+                    try:
+                        body = json.loads(log.request_body_preview)
+                        uname = str(body.get("username") or body.get("email") or body.get("user") or "")
+                        if uname:
+                            u_map = self._prune_dict(self.login_usernames.get(scope_key, {}), 300, now)
+                            u_map[uname] = now
+                            self.login_usernames[scope_key] = u_map
+                            if len(u_map) >= 5:
+                                triggered.append({
+                                    "type": "credential_stuffing",
+                                    "owasp_id": "API2",
+                                    "severity": "high",
+                                    "title": f"Credential Stuffing Attack on {path} ({len(u_map)} distinct accounts)",
+                                    "description": f"Source IP {ip} attempted authentication against {len(u_map)} distinct usernames within 5 minutes on {path}.",
+                                })
+                    except Exception:
+                        pass
 
-            if len(fails) >= 5:
-                triggered.append({
-                    "type": "brute_force_login",
-                    "owasp_id": "API2",
-                    "severity": "high",
-                    "title": f"Brute-Force Authentication Attack ({len(fails)} failed logins/min)",
-                    "description": f"Source IP {ip} triggered {len(fails)} failed 401 login attempts on POST /auth/login in under 60 seconds.",
-                })
+                if len(fails) >= 5:
+                    triggered.append({
+                        "type": "brute_force_login",
+                        "owasp_id": "API2",
+                        "severity": "high",
+                        "title": f"Brute-Force Authentication Attack on {path} ({len(fails)} failed attempts/min)",
+                        "description": f"Source IP {ip} triggered {len(fails)} failed 401 authentication attempts on {log.method} {path} in under 60 seconds.",
+                    })
 
         # 4. BOLA Object ID Enumeration & Ownership Violation (API1 - High)
-        if path.startswith("/users/") or path.startswith("/orders/"):
-            segments = path.strip("/").split("/")
-            if len(segments) == 2 and segments[1] != "me":
-                obj_id = segments[1]
-                key = f"{ip}:{segments[0]}"
-                id_map = self._prune_dict(self.bola_object_ids.get(key, {}), 60, now)
-                id_map[obj_id] = now
-                self.bola_object_ids[key] = id_map
+        segments = [s for s in path.strip("/").split("/") if s]
+        numeric_seg = next((s for s in segments if s.isdigit()), None)
+        if log.owasp_id == "API1" or numeric_seg is not None:
+            obj_id = numeric_seg or (segments[1] if len(segments) >= 2 else "id")
+            resource_prefix = segments[0] if segments else "resource"
+            key = f"{scope_key}:{resource_prefix}"
+            id_map = self._prune_dict(self.bola_object_ids.get(key, {}), 60, now)
+            id_map[obj_id] = now
+            self.bola_object_ids[key] = id_map
 
-                if len(id_map) >= 5 or log.owasp_id == "API1":
-                    triggered.append({
-                        "type": "bola_enumeration",
-                        "owasp_id": "API1",
-                        "severity": "high",
-                        "title": f"BOLA Object ID Enumeration / Unauthorized Access on /{segments[0]}/{{id}}",
-                        "description": f"Principal '{sub}' ({ip}) probed {len(id_map)} distinct object IDs ({', '.join(list(id_map.keys())[:6])}) on /{segments[0]}/{{id}}. {reason}",
-                    })
+            if len(id_map) >= 4 or log.owasp_id == "API1":
+                triggered.append({
+                    "type": "bola_enumeration",
+                    "owasp_id": "API1",
+                    "severity": "high",
+                    "title": f"BOLA Object ID Enumeration / Unauthorized Access on {path}",
+                    "description": f"Principal '{sub}' ({ip}) probed {len(id_map)} distinct object IDs ({', '.join(list(id_map.keys())[:6])}) on {path}. {reason}",
+                })
 
         # 5. BFLA Privilege Escalation Probe (API5 - High)
         if log.owasp_id == "API5" or (path.startswith("/admin") and log.user_role != "admin"):
-            probes = self._prune_ts(self.bfla_probes.get(ip, []), 300, now)
+            probes = self._prune_ts(self.bfla_probes.get(scope_key, []), 300, now)
             probes.append(now)
-            self.bfla_probes[ip] = probes
+            self.bfla_probes[scope_key] = probes
             triggered.append({
                 "type": "bfla_privilege_probe",
                 "owasp_id": "API5",
@@ -162,9 +165,9 @@ class BehavioralTracker:
 
         # 9. Sensitive Business Flow Abuse (API6 - High)
         if log.owasp_id == "API6" or path.startswith("/coupons/redeem"):
-            hits = self._prune_ts(self.sensitive_flow_hits.get(ip, []), 60, now)
+            hits = self._prune_ts(self.sensitive_flow_hits.get(scope_key, []), 60, now)
             hits.append(now)
-            self.sensitive_flow_hits[ip] = hits
+            self.sensitive_flow_hits[scope_key] = hits
             if len(hits) >= 5 or log.decision == "rate_limited":
                 triggered.append({
                     "type": "sensitive_flow_abuse",
@@ -176,9 +179,9 @@ class BehavioralTracker:
 
         # 10. Rate Limit Abuse & Resource Exhaustion (API4 - Medium)
         if log.owasp_id == "API4":
-            rl_hits = self._prune_ts(self.rate_limit_hits.get(ip, []), 300, now)
+            rl_hits = self._prune_ts(self.rate_limit_hits.get(scope_key, []), 300, now)
             rl_hits.append(now)
-            self.rate_limit_hits[ip] = rl_hits
+            self.rate_limit_hits[scope_key] = rl_hits
             if len(rl_hits) >= 3 or "pagination" in reason.lower() or "payload size" in reason.lower():
                 triggered.append({
                     "type": "resource_exhaustion",
@@ -190,9 +193,9 @@ class BehavioralTracker:
 
         # 11. Shadow API Endpoint Probing (API9 - Medium/High)
         if log.owasp_id == "API9":
-            sh_hits = self._prune_ts(self.shadow_scan_hits.get(ip, []), 300, now)
+            sh_hits = self._prune_ts(self.shadow_scan_hits.get(scope_key, []), 300, now)
             sh_hits.append(now)
-            self.shadow_scan_hits[ip] = sh_hits
+            self.shadow_scan_hits[scope_key] = sh_hits
             triggered.append({
                 "type": "shadow_endpoint_scan",
                 "owasp_id": "API9",

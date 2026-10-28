@@ -7,6 +7,7 @@ STRIP_UPSTREAM_HEADERS = {
     "x-aspnet-version",
     "x-backend-host",
     "x-runtime",
+    "x-render-origin-server",
 }
 
 SECURITY_HEADERS = {
@@ -50,10 +51,12 @@ def harden_response(
     Server Banner Stripping, and Verbose Error Sanitization).
     """
     out_headers: Dict[str, str] = {}
+    security_header_keys_lower = {k.lower() for k in SECURITY_HEADERS}
     for k, v in upstream_headers.items():
-        if enable_header_hardening and k.lower() in STRIP_UPSTREAM_HEADERS:
+        kl = k.lower()
+        if enable_header_hardening and (kl in STRIP_UPSTREAM_HEADERS or kl in security_header_keys_lower):
             continue
-        if k.lower() in ("content-length", "transfer-encoding", "content-encoding"):
+        if kl in ("content-length", "transfer-encoding", "content-encoding", "connection", "keep-alive", "date"):
             continue
         out_headers[k] = v
 
@@ -63,8 +66,8 @@ def harden_response(
     redacted_list: List[str] = []
     out_body = body_text
 
-    # Sanitize verbose upstream 500 errors (OWASP API8)
-    if enable_header_hardening and status_code >= 500:
+    # Sanitize verbose upstream 500 errors (OWASP API8), while preserving 502 gateway connectivity diagnostics
+    if enable_header_hardening and status_code >= 500 and status_code != 502:
         out_body = json.dumps({
             "error": "Upstream Service Error",
             "message": "An internal error occurred. Stack traces and internal details have been sanitized by SentinelGW (OWASP API8).",

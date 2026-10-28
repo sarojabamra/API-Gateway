@@ -11,15 +11,18 @@ import {
   Legend,
 } from 'recharts';
 import { apiFetch } from '../lib/api';
+import { useGatewayStore } from '../store/useGatewayStore';
 
 export const AnalyticsPage: React.FC = () => {
+  const { selectedProjectId, selectedProjectName } = useGatewayStore();
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const loadAnalytics = async () => {
       try {
-        const res = await apiFetch('/analytics');
+        if (!selectedProjectId) return;
+        const res = await apiFetch(`/analytics?upstream_id=${selectedProjectId}`);
         setData(res);
       } catch {
         // ignore
@@ -29,7 +32,7 @@ export const AnalyticsPage: React.FC = () => {
     };
 
     loadAnalytics();
-  }, []);
+  }, [selectedProjectId]);
 
   if (loading && !data) {
     return <div className="py-16 text-center text-slate-400 text-sm">Loading analytics...</div>;
@@ -41,36 +44,38 @@ export const AnalyticsPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">Speed & Traffic Trends</h1>
+        <h1 className="text-2xl font-bold text-white">
+          {selectedProjectName || 'Project'} Analytics
+        </h1>
         <p className="text-xs text-slate-400 mt-0.5">
-          See how fast your gateway responds, which status codes are returned, busiest hours, and unusual traffic spikes per IP.
+          Gateway latency percentiles, HTTP status distribution, endpoint volume, and client rate baselines.
         </p>
       </div>
 
-      {/* Speed Cards */}
+      {/* Latency Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800">
-          <div className="text-xs text-slate-400">Typical Response Speed (p50)</div>
+          <div className="text-xs text-slate-400">p50 Latency</div>
           <div className="text-2xl font-bold font-mono text-emerald-400 mt-1">{p.p50_ms || 2.1} ms</div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Half of all requests finish faster than this</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">Median gateway processing time</div>
         </div>
         <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800">
-          <div className="text-xs text-slate-400">Slow Requests Speed (p95)</div>
+          <div className="text-xs text-slate-400">p95 Latency</div>
           <div className="text-2xl font-bold font-mono text-cyan-400 mt-1">{p.p95_ms || 6.4} ms</div>
-          <div className="text-[11px] text-slate-500 mt-0.5">95% of requests finish faster than this</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">95th percentile processing time</div>
         </div>
         <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800">
-          <div className="text-xs text-slate-400">Peak Load Speed (p99)</div>
+          <div className="text-xs text-slate-400">p99 Latency</div>
           <div className="text-2xl font-bold font-mono text-amber-400 mt-1">{p.p99_ms || 11.8} ms</div>
-          <div className="text-[11px] text-slate-500 mt-0.5">Even heavy JSON checks stay under 15ms</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">99th percentile processing time</div>
         </div>
       </div>
 
       {/* Charts Row 1 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5">
-          <h3 className="text-sm font-bold text-white mb-1">Response Speed Over Time</h3>
-          <p className="text-xs text-slate-400 mb-4">Lower is faster (milliseconds)</p>
+          <h3 className="text-sm font-bold text-white mb-1">Latency Percentiles (IST)</h3>
+          <p className="text-xs text-slate-400 mb-4">p50, p95, and p99 response time in milliseconds</p>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={data?.latency_series || []}>
@@ -80,17 +85,17 @@ export const AnalyticsPage: React.FC = () => {
                   contentStyle={{ backgroundColor: '#0f172a', borderColor: '#1e293b', fontSize: '12px' }}
                 />
                 <Legend />
-                <Line type="monotone" dataKey="p50" stroke="#10b981" strokeWidth={2} name="Typical (p50)" />
+                <Line type="monotone" dataKey="p50" stroke="#10b981" strokeWidth={2} name="p50 (ms)" />
                 <Line type="monotone" dataKey="p95" stroke="#06b6d4" strokeWidth={2} name="p95 (ms)" />
-                <Line type="monotone" dataKey="p99" stroke="#f59e0b" strokeWidth={2} name="Peak (p99)" />
+                <Line type="monotone" dataKey="p99" stroke="#f59e0b" strokeWidth={2} name="p99 (ms)" />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5">
-          <h3 className="text-sm font-bold text-white mb-1">Success vs Blocked Responses</h3>
-          <p className="text-xs text-slate-400 mb-4">200 OK vs 401 Login Failed vs 403 Blocked vs 429 Rate Limited</p>
+          <h3 className="text-sm font-bold text-white mb-1">HTTP Status Distribution (IST)</h3>
+          <p className="text-xs text-slate-400 mb-4">Breakdown of 2xx, 401, 403, and 429 responses</p>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={data?.status_series || []}>
@@ -113,8 +118,8 @@ export const AnalyticsPage: React.FC = () => {
       {/* Row 2: Busiest Endpoints by Hour + Request Sizes */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         <div className="lg:col-span-7 bg-slate-900/90 border border-slate-800 rounded-xl p-5">
-          <h3 className="text-sm font-bold text-white mb-1">Busiest Endpoints by Time of Day</h3>
-          <p className="text-xs text-slate-400 mb-4">Number of requests per 4-hour block</p>
+          <h3 className="text-sm font-bold text-white mb-1">Busiest Endpoints by Time of Day (IST)</h3>
+          <p className="text-xs text-slate-400 mb-4">Number of requests per 4-hour block (Indian Standard Time)</p>
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
@@ -161,8 +166,8 @@ export const AnalyticsPage: React.FC = () => {
         </div>
 
         <div className="lg:col-span-5 bg-slate-900/90 border border-slate-800 rounded-xl p-5">
-          <h3 className="text-sm font-bold text-white mb-1">Request Body Sizes</h3>
-          <p className="text-xs text-slate-400 mb-4">Catches unusually large uploads that could slow down your server</p>
+          <h3 className="text-sm font-bold text-white mb-1">Request Payload Size</h3>
+          <p className="text-xs text-slate-400 mb-4">Distribution of inbound request body sizes</p>
           <div className="h-56">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={data?.size_distribution || []}>
@@ -178,13 +183,13 @@ export const AnalyticsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Row 3: Unusual Traffic Spikes per Client */}
+      {/* Row 3: Client Rate Baselines */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5">
         <h3 className="text-sm font-bold text-white mb-1">
-          Unusual Traffic Spike Detector (Per Client IP / User)
+          Client Rate Anomaly Detection
         </h3>
         <p className="text-xs text-slate-400 mb-4">
-          Compares each caller&apos;s current request speed against their normal average. A spike score (Z-Score) of 3.0 or higher means unusual bot-like behavior.
+          Rolling Z-score comparison of current request rate against historical baseline per client.
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">

@@ -1,10 +1,11 @@
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+import json
 from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import Alert, BlocklistEntry, RequestLog
+from app.models import Alert, BlocklistEntry, RequestLog, Upstream, to_ist, to_ist_iso
 from app.gateway.pipeline import gateway_state
 
 router = APIRouter(prefix="/overview", tags=["Overview Dashboard"])
@@ -23,6 +24,7 @@ def _parse_window(time_range: str) -> timedelta:
 @router.get("")
 def get_overview_dashboard(
     time_range: str = Query("24h", description="15m, 1h, 24h, 7d"),
+    upstream_id: int = Query(1),
     session: Session = Depends(get_session),
 ):
     now = datetime.now(timezone.utc)
@@ -30,7 +32,11 @@ def get_overview_dashboard(
     cutoff = now - delta
     prev_cutoff = cutoff - delta
 
-    all_logs = session.exec(select(RequestLog).order_by(RequestLog.ts.desc())).all()
+    all_logs = session.exec(
+        select(RequestLog)
+        .where(RequestLog.upstream_id == upstream_id)
+        .order_by(RequestLog.ts.desc())
+    ).all()
     curr_logs: List[RequestLog] = []
     prev_logs: List[RequestLog] = []
 
@@ -57,9 +63,18 @@ def get_overview_dashboard(
     error_rate = round((error_count / max(1, total_requests)) * 100, 1)
     unique_clients = len(set(r.client_ip for r in curr_logs))
 
-    open_alerts = session.exec(
+    all_open_alerts = session.exec(
         select(Alert).where(Alert.status.in_(["open", "investigating"])).order_by(Alert.ts.desc())
     ).all()
+    open_alerts = []
+    for alert in all_open_alerts:
+        try:
+            evidence = json.loads(alert.evidence_json or "{}")
+            alert_upstream_id = int(evidence.get("upstream_id", 1))
+        except Exception:
+            alert_upstream_id = 1
+        if alert_upstream_id == upstream_id:
+            open_alerts.append(alert)
     critical_alerts = sum(1 for a in open_alerts if a.severity == "critical")
     high_alerts = sum(1 for a in open_alerts if a.severity == "high")
 
@@ -71,7 +86,7 @@ def get_overview_dashboard(
         b_time = now - timedelta(seconds=(bucket_count - 1 - i) * bucket_sec)
         b_key = int(b_time.timestamp() // bucket_sec)
         buckets[b_key] = {
-            "time": b_time.strftime("%H:%M"),
+            "time": to_ist(b_time).strftime("%H:%M"),
             "allowed": 0,
             "blocked": 0,
             "rate_limited": 0,
@@ -161,7 +176,7 @@ def get_overview_dashboard(
     latest_alerts = [
         {
             "id": a.id,
-            "ts": a.ts.isoformat(),
+            "ts": to_ist_iso(a.ts),
             "severity": a.severity,
             "type": a.type,
             "owasp_id": a.owasp_id,
@@ -174,8 +189,11 @@ def get_overview_dashboard(
         for a in open_alerts[:10]
     ]
 
+    project = session.get(Upstream, upstream_id)
     return {
         "gateway_enabled": gateway_state.gateway_enabled,
+        "upstream_id": upstream_id,
+        "project_name": project.name if project else f"Project {upstream_id}",
         "time_range": time_range,
         "kpis": {
             "total_requests": total_requests,

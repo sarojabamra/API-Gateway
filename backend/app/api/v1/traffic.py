@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import Alert, Policy, RequestLog
+from app.models import Alert, Policy, RequestLog, to_ist_iso
 
 router = APIRouter(prefix="/traffic", tags=["Live Traffic & Forensics"])
 
@@ -18,9 +18,14 @@ def list_traffic_logs(
     owasp_id: Optional[str] = None,
     search: Optional[str] = None,
     min_threat_score: int = 0,
+    upstream_id: int = Query(1),
     session: Session = Depends(get_session),
 ):
-    stmt = select(RequestLog).order_by(RequestLog.ts.desc())
+    stmt = (
+        select(RequestLog)
+        .where(RequestLog.upstream_id == upstream_id)
+        .order_by(RequestLog.ts.desc())
+    )
     logs = session.exec(stmt).all()
 
     filtered = []
@@ -50,7 +55,8 @@ def list_traffic_logs(
 
         filtered.append({
             "id": r.id,
-            "ts": r.ts.isoformat(),
+            "upstream_id": r.upstream_id,
+            "ts": to_ist_iso(r.ts),
             "request_id": r.request_id,
             "client_ip": r.client_ip,
             "user_sub": r.user_sub,
@@ -101,7 +107,7 @@ def get_traffic_log_detail(log_id: int, session: Session = Depends(get_session))
 
     return {
         "id": log.id,
-        "ts": log.ts.isoformat(),
+        "ts": to_ist_iso(log.ts),
         "request_id": log.request_id,
         "client_ip": log.client_ip,
         "user_sub": log.user_sub,

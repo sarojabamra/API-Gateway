@@ -7,10 +7,16 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import ApiKey, RevokedToken, User
+from app.models import ApiKey, RevokedToken, Upstream, UpstreamJWTConfig, User, to_ist_iso
 from app.schemas import LoginRequest, LoginResponse, TokenMintRequest, TokenTestRequest, UserOut
 from app.api.v1.deps import create_dashboard_token, get_current_user, require_roles, verify_password
-from app.gateway.auth import hash_api_key, jwt_runtime_config, mint_demo_jwt, validate_jwt_checklist
+from app.gateway.auth import (
+    get_upstream_jwt_config,
+    hash_api_key,
+    jwt_runtime_config,
+    mint_demo_jwt,
+    validate_jwt_checklist,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication & JWT Security Settings"])
 
@@ -101,7 +107,7 @@ def get_auth_center_settings(session: Session = Depends(get_session)):
                 "role": k.role,
                 "scopes": json.loads(k.scopes_json or "[]"),
                 "rate_limit_tier": k.rate_limit_tier,
-                "created_at": k.created_at.isoformat(),
+                "created_at": to_ist_iso(k.created_at),
                 "revoked": k.revoked,
             }
             for k in keys
@@ -113,7 +119,7 @@ def get_auth_center_settings(session: Session = Depends(get_session)):
                 "user_sub": t.user_sub,
                 "reason": t.reason,
                 "revoked_by": t.revoked_by,
-                "revoked_at": t.revoked_at.isoformat(),
+                "revoked_at": to_ist_iso(t.revoked_at),
             }
             for t in tokens
         ],
@@ -131,6 +137,88 @@ def get_jwt_config():
         "reject_alg_none": jwt_runtime_config.reject_alg_none,
         "trusted_kids": list(jwt_runtime_config.trusted_kids.keys()),
     }
+
+
+class UpstreamJWTConfigInput(BaseModel):
+    enabled: bool = True
+    allowed_algorithms: List[str] = ["HS256"]
+    verification_key: Optional[str] = None
+    issuer: Optional[str] = None
+    audience: Optional[str] = None
+    require_jti: bool = False
+    leeway_seconds: int = 10
+
+
+@router.get("/upstreams/{upstream_id}/jwt-config")
+def get_project_jwt_config(
+    upstream_id: int,
+    session: Session = Depends(get_session),
+):
+    upstream = session.get(Upstream, upstream_id)
+    if not upstream:
+        raise HTTPException(status_code=404, detail="API project not found")
+    config = session.exec(
+        select(UpstreamJWTConfig).where(UpstreamJWTConfig.upstream_id == upstream_id)
+    ).first()
+    return {
+        "upstream_id": upstream_id,
+        "project_name": upstream.name,
+        "enabled": config.enabled if config else False,
+        "allowed_algorithms": (
+            json.loads(config.allowed_algorithms_json or '["HS256"]')
+            if config
+            else ["HS256"]
+        ),
+        "has_verification_key": bool(config and config.verification_key),
+        "issuer": config.issuer if config else None,
+        "audience": config.audience if config else None,
+        "require_jti": config.require_jti if config else False,
+        "leeway_seconds": config.leeway_seconds if config else 10,
+    }
+
+
+@router.put("/upstreams/{upstream_id}/jwt-config")
+def update_project_jwt_config(
+    upstream_id: int,
+    payload: UpstreamJWTConfigInput,
+    session: Session = Depends(get_session),
+    _user: User = Depends(require_roles(["admin", "developer"])),
+):
+    upstream = session.get(Upstream, upstream_id)
+    if not upstream:
+        raise HTTPException(status_code=404, detail="API project not found")
+    algorithms = [alg.strip() for alg in payload.allowed_algorithms if alg.strip()]
+    if not algorithms or "none" in {alg.lower() for alg in algorithms}:
+        raise HTTPException(status_code=400, detail="Choose at least one signed JWT algorithm; alg=none is forbidden")
+
+    config = session.exec(
+        select(UpstreamJWTConfig).where(UpstreamJWTConfig.upstream_id == upstream_id)
+    ).first()
+    effective_key = payload.verification_key
+    if not effective_key and "RS256" in {alg.upper() for alg in algorithms}:
+        effective_key = "firebase"
+
+    if not config:
+        if not effective_key:
+            raise HTTPException(status_code=400, detail="JWT verification key or shared secret is required")
+        config = UpstreamJWTConfig(
+            upstream_id=upstream_id,
+            verification_key=effective_key,
+        )
+    elif payload.verification_key:
+        config.verification_key = payload.verification_key
+
+    config.enabled = payload.enabled
+    config.allowed_algorithms_json = json.dumps(algorithms)
+    config.issuer = payload.issuer.strip() if payload.issuer else None
+    config.audience = payload.audience.strip() if payload.audience else None
+    config.require_jti = payload.require_jti
+    config.leeway_seconds = max(0, min(payload.leeway_seconds, 300))
+    config.updated_at = datetime.now(timezone.utc)
+    session.add(config)
+    session.commit()
+    session.refresh(config)
+    return get_project_jwt_config(upstream_id, session)
 
 
 class JwtTestUnifiedInput(BaseModel):
@@ -191,6 +279,11 @@ def test_jwt_token(payload: TokenTestRequest, session: Session = Depends(get_ses
         session=session,
         expected_role=payload.expected_role,
         expected_scope=payload.expected_scope,
+        jwt_config=(
+            get_upstream_jwt_config(session, payload.upstream_id)
+            if payload.upstream_id is not None
+            else None
+        ),
     )
 
 
@@ -223,10 +316,26 @@ def list_api_keys(session: Session = Depends(get_session)):
             "role": k.role,
             "scopes": json.loads(k.scopes_json or "[]"),
             "rate_limit_tier": k.rate_limit_tier,
-            "created_at": k.created_at.isoformat(),
+            "created_at": to_ist_iso(k.created_at),
             "revoked": k.revoked,
         }
         for k in keys
+    ]
+
+
+@router.get("/revoked-tokens")
+def list_revoked_tokens(session: Session = Depends(get_session)):
+    tokens = session.exec(select(RevokedToken).order_by(RevokedToken.revoked_at.desc())).all()
+    return [
+        {
+            "id": t.id,
+            "jti": t.jti,
+            "user_sub": t.user_sub,
+            "reason": t.reason,
+            "revoked_by": t.revoked_by,
+            "revoked_at": to_ist_iso(t.revoked_at),
+        }
+        for t in tokens
     ]
 
 
@@ -269,7 +378,7 @@ def create_api_key(
         "role": key_obj.role,
         "scopes": payload.scopes,
         "rate_limit_tier": key_obj.rate_limit_tier,
-        "created_at": key_obj.created_at.isoformat(),
+        "created_at": to_ist_iso(key_obj.created_at),
         "revoked": key_obj.revoked,
     }
 

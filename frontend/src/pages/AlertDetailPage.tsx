@@ -11,7 +11,7 @@ import {
   MessageSquarePlus,
   Eye,
 } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, formatTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { DecisionBadge, MethodBadge, OwaspBadge, SeverityBadge } from '../components/shared/Badges';
 
@@ -110,31 +110,31 @@ export const AlertDetailPage: React.FC = () => {
         )}
       </div>
 
-      {/* Main Grid: AI Triage Panel + Offender Profile & Containment Actions */}
+      {/* Main Grid: Incident Analysis Panel + Offender Profile & Containment Actions */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* AI Triage Panel */}
-        <div className="lg:col-span-8 bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950/30 border border-indigo-500/30 rounded-xl p-5 space-y-4">
+        {/* Incident Analysis Panel */}
+        <div className="lg:col-span-8 bg-slate-900/90 border border-slate-800 rounded-xl p-5 space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="p-2 rounded-lg bg-indigo-500/20 border border-indigo-500/40 text-indigo-300">
+              <div className="p-2 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
                 <Sparkles className="w-4 h-4" />
               </div>
               <div>
                 <h3 className="text-sm font-bold text-white">
-                  AI-Assisted Threat Triage & Remediation
+                  Automated Incident Triage & Remediation
                 </h3>
-                <p className="text-[11px] font-mono text-indigo-300">
-                  {ai.engine || 'SentinelAI Neural Threat Triage Engine'} · Confidence: {ai.confidence_score || 95}%
+                <p className="text-[11px] font-mono text-slate-400">
+                  Heuristic Threat Analysis · Confidence: {ai.confidence_score || 95}%
                 </p>
               </div>
             </div>
             {canMutate(['admin', 'analyst']) && (
               <button
                 disabled={actionBusy}
-                onClick={() => runAction({ action: 'ai_triage' }, 'Regenerated AI Triage Analysis')}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/40 transition"
+                onClick={() => runAction({ action: 'ai_triage' }, 'Re-evaluated incident analysis')}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
               >
-                Regenerate AI Triage
+                Re-run Analysis
               </button>
             )}
           </div>
@@ -206,7 +206,7 @@ export const AlertDetailPage: React.FC = () => {
             {canMutate(['admin', 'analyst']) ? (
               <div className="space-y-2 pt-2">
                 <div className="text-[10px] font-mono uppercase text-slate-400">
-                  One-Click Containment Actions
+                  Containment Actions
                 </div>
                 <button
                   disabled={actionBusy || offender.is_ip_blocked}
@@ -285,7 +285,7 @@ export const AlertDetailPage: React.FC = () => {
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px]">
-                  <th className="py-2 pr-2">Time</th>
+                  <th className="py-2 pr-2">Time (IST)</th>
                   <th className="py-2 px-2">Req ID</th>
                   <th className="py-2 px-2">Decision</th>
                   <th className="py-2 px-2">Endpoint</th>
@@ -301,7 +301,7 @@ export const AlertDetailPage: React.FC = () => {
                     className="hover:bg-slate-800/60 cursor-pointer"
                   >
                     <td className="py-2.5 pr-2 font-mono text-slate-400 whitespace-nowrap">
-                      {new Date(r.ts).toLocaleTimeString()}
+                      {formatTimeIST(r.ts)}
                     </td>
                     <td className="py-2.5 px-2 font-mono text-cyan-300">{r.request_id}</td>
                     <td className="py-2.5 px-2">
@@ -345,7 +345,7 @@ export const AlertDetailPage: React.FC = () => {
                   <div key={i} className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs">
                     <div className="flex items-center justify-between text-[10px] font-mono text-slate-400 mb-1">
                       <span className="text-cyan-400">{n.author}</span>
-                      <span>{new Date(n.ts).toLocaleTimeString()}</span>
+                      <span>{formatTimeIST(n.ts)}</span>
                     </div>
                     <div className="text-slate-200">{n.text}</div>
                   </div>

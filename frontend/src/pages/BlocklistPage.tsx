@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Ban, ShieldAlert, Trash2, Plus } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, formatDateTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge } from '../components/shared/Badges';
 
@@ -202,7 +202,7 @@ export const BlocklistPage: React.FC = () => {
               <th className="py-3 px-3">Reason</th>
               <th className="py-3 px-3">OWASP</th>
               <th className="py-3 px-3">Source & Author</th>
-              <th className="py-3 px-3">Expires At</th>
+              <th className="py-3 px-3">Expires At (IST)</th>
               <th className="py-3 px-4 text-right">Action</th>
             </tr>
           </thead>
@@ -232,7 +232,7 @@ export const BlocklistPage: React.FC = () => {
                   {b.source} ({b.created_by})
                 </td>
                 <td className="py-3 px-3 font-mono text-slate-400">
-                  {b.expires_at ? new Date(b.expires_at).toLocaleString() : 'Permanent'}
+                  {b.expires_at ? formatDateTimeIST(b.expires_at) : 'Permanent'}
                 </td>
                 <td className="py-3 px-4 text-right">
                   {b.active && canMutate(['admin', 'analyst']) && (

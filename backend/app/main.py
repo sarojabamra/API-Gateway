@@ -5,7 +5,7 @@ from sqlmodel import Session
 
 from app.config import settings
 from app.db import create_db_and_tables, engine
-from app.seed import seed_all_data
+from app.seed import backfill_route_security_defaults, seed_all_data
 
 from app.demo_api.vulnshop import router as vulnshop_router
 from app.gateway.proxy import router as gateway_proxy_router
@@ -30,6 +30,7 @@ async def lifespan(_app: FastAPI):
     create_db_and_tables()
     with Session(engine) as session:
         seed_all_data(session, force_reset=False)
+        backfill_route_security_defaults(session)
     yield
 
 

@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import User
+from app.models import User, to_ist_iso
 from app.api.v1.deps import hash_password, require_roles
 from app.gateway.pipeline import gateway_state
 
@@ -74,8 +74,8 @@ def get_settings_and_users(session: Session = Depends(get_session)):
                 "full_name": u.full_name,
                 "role": u.role,
                 "is_active": u.is_active,
-                "created_at": u.created_at.isoformat(),
-                "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+                "created_at": to_ist_iso(u.created_at),
+                "last_login_at": to_ist_iso(u.last_login_at),
             }
             for u in users
         ],

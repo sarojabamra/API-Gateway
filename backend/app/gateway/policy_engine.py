@@ -97,7 +97,12 @@ def check_bola_ownership(
     if user_role == "admin":
         return True, None
 
-    obj_id = path_params.get("id") or path_params.get("user_id") or path_params.get("order_id")
+    obj_id = (
+        path_params.get("id")
+        or path_params.get("user_id")
+        or path_params.get("order_id")
+        or (next(iter(path_params.values()), None) if path_params else None)
+    )
     if not obj_id:
         return True, None
 

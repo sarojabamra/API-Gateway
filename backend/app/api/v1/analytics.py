@@ -1,10 +1,10 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import ClientBaseline, RequestLog
+from app.models import ClientBaseline, RequestLog, to_ist
 
 router = APIRouter(prefix="/analytics", tags=["Deep Security & Performance Analytics"])
 
@@ -17,9 +17,20 @@ def _percentile(sorted_vals: List[float], pct: float) -> float:
 
 
 @router.get("")
-def get_deep_analytics(session: Session = Depends(get_session)):
-    logs = session.exec(select(RequestLog).order_by(RequestLog.ts.asc())).all()
+def get_deep_analytics(
+    upstream_id: int = Query(1),
+    session: Session = Depends(get_session),
+):
+    logs = session.exec(
+        select(RequestLog)
+        .where(RequestLog.upstream_id == upstream_id)
+        .order_by(RequestLog.ts.asc())
+    ).all()
     baselines = session.exec(select(ClientBaseline).order_by(ClientBaseline.last_zscore.desc())).all()
+    project_clients = {
+        f"{upstream_id}:{log.user_sub or log.client_ip}"
+        for log in logs
+    }
 
     now = datetime.now(timezone.utc)
     # 1. Latency Percentiles (p50, p95, p99) over 12 time buckets
@@ -32,7 +43,7 @@ def get_deep_analytics(session: Session = Depends(get_session)):
     for i in range(bucket_count):
         bt = now - timedelta(seconds=(bucket_count - 1 - i) * bucket_sec)
         bk = int(bt.timestamp() // bucket_sec)
-        bucket_labels[bk] = bt.strftime("%H:%M")
+        bucket_labels[bk] = to_ist(bt).strftime("%H:%M")
         lat_buckets[bk] = []
 
     for lg in logs:
@@ -76,12 +87,12 @@ def get_deep_analytics(session: Session = Depends(get_session)):
             "s5xx": st["5xx"],
         })
 
-    # 2. Endpoint Traffic Heatmap by Hour Block (00-04, 04-08, 08-12, 12-16, 16-20, 20-24)
+    # 2. Endpoint Traffic Heatmap by Hour Block (00-04, 04-08, 08-12, 12-16, 16-20, 20-24) in IST
     hour_blocks = ["00:00", "04:00", "08:00", "12:00", "16:00", "20:00"]
     ep_heat: Dict[str, Dict[str, int]] = defaultdict(lambda: {hb: 0 for hb in hour_blocks})
     for lg in logs:
-        ts_utc = lg.ts if lg.ts.tzinfo else lg.ts.replace(tzinfo=timezone.utc)
-        hb_idx = min(5, ts_utc.hour // 4)
+        ts_ist = to_ist(lg.ts)
+        hb_idx = min(5, ts_ist.hour // 4)
         ep_heat[lg.path][hour_blocks[hb_idx]] += 1
 
     heatmap = [
@@ -132,6 +143,6 @@ def get_deep_analytics(session: Session = Depends(get_session)):
                 "last_zscore": b.last_zscore,
                 "is_anomalous": b.last_zscore >= 3.0,
             }
-            for b in baselines[:12]
+            for b in [item for item in baselines if item.client_key in project_clients][:12]
         ],
     }

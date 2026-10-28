@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Ban, KeyRound, ExternalLink, CheckCircle2, XCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { apiFetch } from '../../lib/api';
+import { apiFetch, formatDateTimeIST } from '../../lib/api';
 import { useGatewayStore } from '../../store/useGatewayStore';
 import { DecisionBadge, MethodBadge, OwaspBadge } from './Badges';
 
@@ -205,9 +205,9 @@ export const RequestDetailDrawer: React.FC = () => {
                 </div>
               </div>
               <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
-                <div className="text-slate-400">Time</div>
+                <div className="text-slate-400">Time (IST)</div>
                 <div className="font-mono text-slate-100 mt-1">
-                  {new Date(detail.ts).toLocaleTimeString()}
+                  {formatDateTimeIST(detail.ts)}
                 </div>
               </div>
             </div>

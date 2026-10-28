@@ -1,6 +1,10 @@
 import json
+import re
 from typing import Any, Dict, List
 import httpx
+from sqlmodel import Session, select
+from app.db import engine
+from app.models import Route, Upstream
 from app.gateway.auth import mint_demo_jwt
 from app.gateway.pipeline import gateway_state
 from app.gateway.ratelimit import rate_limiter
@@ -89,7 +93,11 @@ SCENARIO_CATALOG: List[Dict[str, Any]] = [
 ]
 
 
-async def execute_attack_scenario(scenario_id: str, asgi_app: Any) -> Dict[str, Any]:
+async def execute_attack_scenario(
+    scenario_id: str,
+    asgi_app: Any,
+    upstream_id: int = 1,
+) -> Dict[str, Any]:
     """
     Executes one of the 8 scripted OWASP attack scenarios (or 'all') through /gw/*
     and returns rich step-by-step HTTP request/response logs for the Attack Simulator UI.
@@ -97,18 +105,105 @@ async def execute_attack_scenario(scenario_id: str, asgi_app: Any) -> Dict[str, 
     if scenario_id == "all":
         combined_steps = []
         for sc in SCENARIO_CATALOG:
-            res = await execute_attack_scenario(sc["id"], asgi_app)
+            res = await execute_attack_scenario(sc["id"], asgi_app, upstream_id)
             combined_steps.extend(res["steps"])
-        blocked = sum(1 for s in combined_steps if s["status_code"] in (400, 401, 403, 413, 429))
+        blocked = sum(1 for s in combined_steps if s.get("blocked_by_gateway"))
         return {
             "scenario_id": "all",
             "title": "Full 8-Scenario OWASP API Top 10 Attack Suite",
+            "upstream_id": upstream_id,
+            "project_name": res["project_name"] if SCENARIO_CATALOG else f"Project {upstream_id}",
             "gateway_enabled": gateway_state.gateway_enabled,
             "total_requests": len(combined_steps),
             "blocked_count": blocked,
             "passed_through_count": len(combined_steps) - blocked,
             "steps": combined_steps,
         }
+
+    with Session(engine) as session:
+        upstream = session.get(Upstream, upstream_id)
+        if not upstream:
+            raise ValueError(f"Selected API project {upstream_id} was not found")
+        routes = session.exec(
+            select(Route).where(
+                Route.upstream_id == upstream_id,
+                Route.registered == True,
+            )
+        ).all()
+
+    prefix = f"/gw/{upstream.slug}"
+
+    def gateway_url(path: str, query: str = "") -> str:
+        clean = "/" + path.lstrip("/")
+        return f"{prefix}{clean}{query}"
+
+    def choose_route(
+        keywords: tuple[str, ...] = (),
+        methods: tuple[str, ...] = (),
+        parameterized: bool = False,
+        prefer_admin: bool = False,
+    ) -> Route | None:
+        candidates = [
+            route for route in routes
+            if (not methods or route.method.upper() in methods)
+            and (not parameterized or "{" in route.path_pattern)
+        ]
+        if not candidates:
+            candidates = [
+                route for route in routes
+                if not methods or route.method.upper() in methods
+            ]
+        if not candidates:
+            candidates = routes
+        if not candidates:
+            return None
+
+        def score(route: Route) -> int:
+            text = f"{route.path_pattern} {route.description}".lower()
+            value = sum(10 for keyword in keywords if keyword in text)
+            if prefer_admin and (route.required_role == "admin" or "admin" in text):
+                value += 30
+            if parameterized and "{" in route.path_pattern:
+                value += 20
+            return value
+
+        return max(candidates, key=score)
+
+    def concrete(route: Route | None, value: str = "102", fallback: str = "/") -> str:
+        pattern = route.path_pattern if route else fallback
+        return re.sub(r"\{[^}]+\}", value, pattern)
+
+    bola_route = next(
+        (
+            route for route in routes
+            if "{" in route.path_pattern
+            and route.bola_check_enabled
+            and route.required_role != "admin"
+        ),
+        None,
+    ) or choose_route(("user", "order", "account", "item"), (), True)
+    login_route = choose_route(("login", "auth", "token", "session"), ("POST",))
+    read_route = choose_route(("profile", "user", "account", "customer"), ("GET",))
+    write_route = choose_route(("register", "user", "profile", "account"), ("POST", "PUT", "PATCH"))
+    rate_route = next((route for route in routes if route.is_sensitive_flow), None) or choose_route(
+        ("checkout", "order", "coupon", "payment", "search"), ("POST", "GET")
+    )
+    admin_route = choose_route(("admin", "audit", "manage", "internal"), (), prefer_admin=True)
+    generic_get = choose_route((), ("GET",)) or (routes[0] if routes else None)
+
+    targets = {
+        "bola": concrete(bola_route, "102", "/users/102"),
+        "login": concrete(login_route, "101", "/auth/login"),
+        "read": concrete(read_route, "101", "/users/me"),
+        "write": concrete(write_route, "101", "/auth/register"),
+        "rate": concrete(rate_route, "101", "/products"),
+        "admin": concrete(admin_route, "101", "/admin/users"),
+        "generic": concrete(generic_get, "101", "/search"),
+        "shadow": "/sentinel-security-test/undocumented-probe",
+    }
+    # Keep simulated offenders isolated per API project so one project's auto-block
+    # does not change another project's test results.
+    ip_prefix = f"198.18.{(upstream_id % 240) + 1}"
 
     user_jwt = mint_demo_jwt(sub="user-101", email="alice@vulnshop.io", role="user", preset="valid_user")["token"]
     alg_none_jwt = mint_demo_jwt(preset="alg_none")["token"]
@@ -119,150 +214,174 @@ async def execute_attack_scenario(scenario_id: str, asgi_app: Any) -> Dict[str, 
 
     async with httpx.AsyncClient(transport=transport, base_url="http://local-gateway") as client:
         if scenario_id == "bola_enum":
-            attacker_ip = "198.51.100.101"
+            attacker_ip = f"{ip_prefix}.101"
             for target_id in ["101", "102", "103", "104", "105", "106", "999"]:
-                resp = await client.get(
-                    f"/gw/users/{target_id}",
+                target_path = concrete(bola_route, target_id, targets["bola"])
+                bola_method = bola_route.method.upper() if bola_route else "GET"
+                resp = await client.request(
+                    bola_method,
+                    gateway_url(target_path),
                     headers={
                         "Authorization": f"Bearer {user_jwt}",
                         "X-Simulated-Client-IP": attacker_ip,
                         "User-Agent": "BOLA-ScraperBot/2.1",
                     },
                 )
-                steps.append(_format_step(f"GET /gw/users/{target_id}", "API1", resp))
+                steps.append(_format_step(f"{bola_method} {gateway_url(target_path)}", "API1", resp))
 
         elif scenario_id == "brute_force":
-            attacker_ip = "203.0.113.42"
+            attacker_ip = f"{ip_prefix}.42"
             usernames = ["alice_mercer", "bob_chen", "charlie_davis", "root_admin", "finance_lead", "devops_admin"]
             for idx, uname in enumerate(usernames):
                 resp = await client.post(
-                    "/gw/auth/login",
+                    gateway_url(targets["login"]),
                     json={"username": uname, "password": f"wrongPass!{idx}"},
                     headers={
                         "X-Simulated-Client-IP": attacker_ip,
                         "User-Agent": "Hydra-CredentialStuffer/9.4",
                     },
                 )
-                steps.append(_format_step(f"POST /gw/auth/login (user={uname})", "API2", resp))
+                steps.append(_format_step(f"POST {gateway_url(targets['login'])} (user={uname})", "API2", resp))
 
         elif scenario_id == "jwt_tamper":
-            attacker_ip = "198.51.100.202"
+            attacker_ip = f"{ip_prefix}.202"
             r1 = await client.get(
-                "/gw/orders/5001",
+                gateway_url(targets["generic"]),
                 headers={
                     "Authorization": f"Bearer {alg_none_jwt}",
                     "X-Simulated-Client-IP": attacker_ip,
                     "User-Agent": "JWT-Tool-Exploiter/1.3",
                 },
             )
-            steps.append(_format_step("GET /gw/orders/5001 [alg=none Forged JWT]", "API2", r1))
+            steps.append(_format_step(f"GET {gateway_url(targets['generic'])} [alg=none Forged JWT]", "API2", r1))
 
             r2 = await client.get(
-                "/gw/orders/5003",
+                gateway_url(targets["generic"]),
                 headers={
                     "Authorization": f"Bearer {tampered_jwt}",
                     "X-Simulated-Client-IP": attacker_ip,
                     "User-Agent": "JWT-Tool-Exploiter/1.3",
                 },
             )
-            steps.append(_format_step("GET /gw/orders/5003 [Tampered Signature role=admin]", "API2", r2))
+            steps.append(_format_step(f"GET {gateway_url(targets['generic'])} [Tampered Signature role=admin]", "API2", r2))
 
         elif scenario_id == "data_exposure":
-            attacker_ip = "198.51.100.150"
+            attacker_ip = f"{ip_prefix}.150"
             r1 = await client.get(
-                "/gw/users/me",
+                gateway_url(targets["read"]),
                 headers={
                     "Authorization": f"Bearer {user_jwt}",
                     "X-Simulated-Client-IP": attacker_ip,
                 },
             )
-            steps.append(_format_step("GET /gw/users/me [Check API3 Response Field Redaction]", "API3", r1))
+            steps.append(_format_step(f"GET {gateway_url(targets['read'])} [Check API3 Response Field Redaction]", "API3", r1))
 
-            r2 = await client.post(
-                "/gw/auth/register",
+            write_method = write_route.method.upper() if write_route else "POST"
+            r2 = await client.request(
+                write_method,
+                gateway_url(targets["write"]),
                 json={
                     "username": "evil_escalator",
                     "email": "evil@attacker.io",
                     "password": "hacked",
                     "role": "admin",
+                    "is_admin": True,
                 },
                 headers={"X-Simulated-Client-IP": attacker_ip},
             )
-            steps.append(_format_step("POST /gw/auth/register [Mass Assignment role='admin']", "API3", r2))
+            steps.append(_format_step(f"{write_method} {gateway_url(targets['write'])} [Mass Assignment is_admin=true]", "API3", r2))
 
         elif scenario_id == "rate_flood":
-            attacker_ip = "203.0.113.88"
-            rate_limiter.reset_key(f"{attacker_ip}:user-101:/coupons/redeem")
-            for i in range(1, 9):
-                r_coup = await client.post(
-                    "/gw/coupons/redeem",
-                    json={"code": f"PROMO50-{i}"},
-                    headers={
-                        "Authorization": f"Bearer {user_jwt}",
-                        "X-Simulated-Client-IP": attacker_ip,
-                        "User-Agent": "CouponScalperBot/4.0",
-                    },
-                )
-                steps.append(_format_step(f"POST /gw/coupons/redeem (attempt #{i})", "API6", r_coup))
+            attacker_ip = f"{ip_prefix}.88"
+            rate_limiter.reset_key(
+                f"upstream-{upstream_id}:{attacker_ip}:user-101:"
+                f"{rate_route.path_pattern if rate_route else targets['rate']}"
+            )
+            for i in range(1, 19):
+                method = rate_route.method.upper() if rate_route else "GET"
+                headers = {
+                    "Authorization": f"Bearer {user_jwt}",
+                    "X-Simulated-Client-IP": attacker_ip,
+                    "User-Agent": "SentinelGW-VelocityTester/4.0",
+                }
+                if method in ("POST", "PUT", "PATCH"):
+                    response = await client.request(
+                        method,
+                        gateway_url(targets["rate"]),
+                        json={"test_sequence": i, "code": f"SECURITY-TEST-{i}"},
+                        headers=headers,
+                    )
+                else:
+                    response = await client.get(gateway_url(targets["rate"]), headers=headers)
+                steps.append(_format_step(f"{method} {gateway_url(targets['rate'])} (attempt #{i})", "API6", response))
 
             r_page = await client.get(
-                "/gw/products?limit=50000",
+                gateway_url(targets["generic"], "?limit=50000"),
                 headers={"X-Simulated-Client-IP": attacker_ip},
             )
-            steps.append(_format_step("GET /gw/products?limit=50000 [Unbounded Pagination]", "API4", r_page))
+            steps.append(_format_step(f"GET {gateway_url(targets['generic'], '?limit=50000')} [Unbounded Pagination]", "API4", r_page))
 
         elif scenario_id == "bfla_admin":
-            attacker_ip = "198.51.100.55"
+            attacker_ip = f"{ip_prefix}.55"
             for i in range(1, 3):
-                resp = await client.get(
-                    "/gw/admin/users",
+                admin_method = admin_route.method.upper() if admin_route else "GET"
+                resp = await client.request(
+                    admin_method,
+                    gateway_url(targets["admin"]),
                     headers={
                         "Authorization": f"Bearer {user_jwt}",
                         "X-Simulated-Client-IP": attacker_ip,
                         "User-Agent": "PrivilegeScanner/1.0",
                     },
                 )
-                steps.append(_format_step(f"GET /gw/admin/users [Normal User Token #{i}]", "API5", resp))
+                steps.append(_format_step(f"{admin_method} {gateway_url(targets['admin'])} [Normal User Token #{i}]", "API5", resp))
 
         elif scenario_id == "ssrf_metadata":
-            attacker_ip = "203.0.113.199"
+            attacker_ip = f"{ip_prefix}.199"
             r1 = await client.get(
-                "/gw/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                gateway_url(targets["generic"], "?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/"),
                 headers={
                     "Authorization": f"Bearer {user_jwt}",
                     "X-Simulated-Client-IP": attacker_ip,
                 },
             )
-            steps.append(_format_step("GET /gw/fetch?url=http://169.254.169.254/... [AWS Metadata SSRF]", "API7", r1))
+            steps.append(_format_step(f"GET {gateway_url(targets['generic'])}?url=169.254.169.254 [AWS Metadata SSRF]", "API7", r1))
 
             r2 = await client.get(
-                "/gw/fetch?url=http://127.0.0.1:6379/info",
+                gateway_url(targets["generic"], "?url=http://127.0.0.1:6379/info"),
                 headers={
                     "Authorization": f"Bearer {user_jwt}",
                     "X-Simulated-Client-IP": attacker_ip,
                 },
             )
-            steps.append(_format_step("GET /gw/fetch?url=http://127.0.0.1:6379/info [Loopback Redis SSRF]", "API7", r2))
+            steps.append(_format_step(f"GET {gateway_url(targets['generic'])}?url=127.0.0.1:6379 [Loopback Redis SSRF]", "API7", r2))
 
         elif scenario_id == "sqli_shadow":
-            attacker_ip = "203.0.113.250"
+            attacker_ip = f"{ip_prefix}.250"
             r1 = await client.get(
-                "/gw/search?q=' UNION SELECT username, password_hash FROM users --",
+                gateway_url(targets["generic"], "?q=' UNION SELECT username, password_hash FROM users --"),
                 headers={"X-Simulated-Client-IP": attacker_ip, "User-Agent": "sqlmap/1.8"},
             )
-            steps.append(_format_step("GET /gw/search?q=' UNION SELECT ... [SQLi Payload]", "API8", r1))
+            steps.append(_format_step(f"GET {gateway_url(targets['generic'])}?q=' UNION SELECT ... [SQLi Payload]", "API8", r1))
 
             r2 = await client.get(
-                "/gw/internal/debug",
-                headers={"X-Simulated-Client-IP": attacker_ip, "User-Agent": "Nuclei-ShadowScanner/3.1"},
+                gateway_url(targets["shadow"]),
+                headers={
+                    "X-Simulated-Client-IP": attacker_ip,
+                    "User-Agent": "Nuclei-ShadowScanner/3.1",
+                    "X-Simulator-Shadow": "1",
+                },
             )
-            steps.append(_format_step("GET /gw/internal/debug [Undocumented Shadow API]", "API9", r2))
+            steps.append(_format_step(f"GET {gateway_url(targets['shadow'])} [Undocumented Shadow API]", "API9", r2))
 
     meta = next((s for s in SCENARIO_CATALOG if s["id"] == scenario_id), SCENARIO_CATALOG[0])
-    blocked = sum(1 for s in steps if s["status_code"] in (400, 401, 403, 413, 429))
+    blocked = sum(1 for s in steps if s.get("blocked_by_gateway"))
     return {
         "scenario_id": scenario_id,
         "title": meta["title"],
+        "upstream_id": upstream.id,
+        "project_name": upstream.name,
+        "project_slug": upstream.slug,
         "owasp_id": meta["owasp_id"],
         "gateway_enabled": gateway_state.gateway_enabled,
         "total_requests": len(steps),
@@ -280,7 +399,7 @@ def _format_step(label: str, owasp_id: str, resp: httpx.Response) -> Dict[str, A
         preview = resp.text[:650]
 
     redacted_hdr = resp.headers.get("X-Gateway-Redacted-Fields")
-    decision = resp.headers.get("X-Gateway-Decision", "allowed" if resp.status_code < 400 else "blocked")
+    decision = resp.headers.get("X-Gateway-Decision", "upstream_response")
     if redacted_hdr and resp.status_code == 200:
         decision = f"allowed (API3 redacted: {redacted_hdr})"
 
@@ -289,6 +408,7 @@ def _format_step(label: str, owasp_id: str, resp: httpx.Response) -> Dict[str, A
         "owasp_id": owasp_id,
         "status_code": resp.status_code,
         "decision": decision,
+        "blocked_by_gateway": decision in ("blocked", "rate_limited"),
         "request_id": resp.headers.get("X-Request-ID", "-"),
         "server_header": resp.headers.get("Server", "[Stripped by Gateway API8]"),
         "response_preview": preview,

@@ -1,13 +1,19 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CheckSquare, RefreshCw, ShieldAlert } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, formatTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
 import { AlertItem } from '../types/api';
 
 export const AlertsPage: React.FC = () => {
-  const { addToast, canMutate, liveAlerts } = useGatewayStore();
+  const {
+    addToast,
+    canMutate,
+    liveAlerts,
+    selectedProjectId,
+    selectedProjectName,
+  } = useGatewayStore();
   const [alerts, setAlerts] = useState<AlertItem[]>([]);
   const [summary, setSummary] = useState<any>({});
   const [severityFilter, setSeverityFilter] = useState('');
@@ -21,6 +27,7 @@ export const AlertsPage: React.FC = () => {
     setLoading(true);
     try {
       const params = new URLSearchParams();
+      if (selectedProjectId) params.set('upstream_id', String(selectedProjectId));
       if (severityFilter) params.set('severity', severityFilter);
       if (statusFilter) params.set('status', statusFilter);
       if (owaspFilter) params.set('owasp_id', owaspFilter);
@@ -36,7 +43,7 @@ export const AlertsPage: React.FC = () => {
 
   useEffect(() => {
     fetchAlerts();
-  }, [severityFilter, statusFilter, owaspFilter, liveAlerts.length]);
+  }, [severityFilter, statusFilter, owaspFilter, liveAlerts.length, selectedProjectId]);
 
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -65,9 +72,11 @@ export const AlertsPage: React.FC = () => {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Security Alerts & Incident Queue</h1>
+          <h1 className="text-2xl font-bold text-white">
+            {selectedProjectName || 'Project'} Security Alerts
+          </h1>
           <p className="text-xs text-slate-400 mt-0.5">
-            Deduplicated OWASP threat detections with status workflow, bulk triage, and AI-assisted forensics.
+            Correlated OWASP threat detections, status workflow, and incident triage.
           </p>
         </div>
         <button
@@ -178,7 +187,7 @@ export const AlertsPage: React.FC = () => {
                 <th className="py-3 px-3">Offender IP / Sub</th>
                 <th className="py-3 px-3">Events</th>
                 <th className="py-3 px-3">Status</th>
-                <th className="py-3 px-4 text-right">Last Seen</th>
+                <th className="py-3 px-4 text-right">Last Seen (IST)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/70">
@@ -250,7 +259,7 @@ export const AlertsPage: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-3 px-4 text-right font-mono text-slate-400 whitespace-nowrap">
-                      {new Date(a.ts).toLocaleTimeString()}
+                      {formatTimeIST(a.ts)}
                     </td>
                   </tr>
                 ))

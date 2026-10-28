@@ -35,18 +35,18 @@ export const OwaspCoveragePage: React.FC = () => {
             {data?.edition || 'OWASP API Security Top 10 (2023)'}
           </span>
           <h1 className="text-2xl font-bold text-white mt-0.5">
-            OWASP Top 10 Security Checklist
+            OWASP API Security Top 10
           </h1>
           <p className="text-xs text-slate-400 mt-0.5">
-            See all 10 major API security risks, how SentinelGW blocks them, and test each one with 1 click.
+            Coverage status, active enforcement rules, and telemetry per category.
           </p>
         </div>
 
         <div className="flex items-center gap-4 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5">
           <div>
-            <div className="text-[10px] font-mono uppercase text-slate-400">Active Protection</div>
+            <div className="text-[10px] font-mono uppercase text-slate-400">Coverage</div>
             <div className="text-lg font-bold font-mono text-emerald-400">
-              {data?.protected_in_scope_count || 9} / {data?.total_in_scope_count || 9} Risks Covered ({data?.posture_score || 100}%)
+              {data?.protected_in_scope_count || 9} / {data?.total_in_scope_count || 9} Categories ({data?.posture_score || 100}%)
             </div>
           </div>
           <ShieldCheck className="w-7 h-7 text-emerald-400" />
@@ -94,7 +94,7 @@ export const OwaspCoveragePage: React.FC = () => {
 
                 <div className="mt-3 p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs">
                   <div className="text-[10px] font-mono uppercase text-cyan-400 mb-1">
-                    How SentinelGW Protects You
+                    Gateway Mitigation
                   </div>
                   <p className="text-slate-300 leading-relaxed">{c.gateway_mitigation}</p>
                 </div>

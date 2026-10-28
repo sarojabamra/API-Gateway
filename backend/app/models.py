@@ -1,10 +1,25 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlmodel import Field, SQLModel
+
+IST = timezone(timedelta(hours=5, minutes=30), name="IST")
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def to_ist(dt: Optional[datetime]) -> Optional[datetime]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST)
+
+
+def to_ist_iso(dt: Optional[datetime]) -> Optional[str]:
+    ist_dt = to_ist(dt)
+    return ist_dt.isoformat() if ist_dt is not None else None
 
 
 class User(SQLModel, table=True):
@@ -29,6 +44,21 @@ class Upstream(SQLModel, table=True):
     openapi_spec_json: Optional[str] = Field(default=None)
     enabled: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class UpstreamJWTConfig(SQLModel, table=True):
+    """JWT verification settings owned by one connected upstream API project."""
+    __tablename__ = "upstream_jwt_configs"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    upstream_id: int = Field(index=True, unique=True)
+    enabled: bool = Field(default=True)
+    allowed_algorithms_json: str = Field(default='["HS256"]')
+    verification_key: str = Field(default="")
+    issuer: Optional[str] = Field(default=None)
+    audience: Optional[str] = Field(default=None)
+    require_jti: bool = Field(default=False)
+    leeway_seconds: int = Field(default=10)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class Route(SQLModel, table=True):

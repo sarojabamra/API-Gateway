@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlmodel import Session
+from app.db import get_session
+from app.models import Upstream
 from pydantic import BaseModel
 from app.models import User
 from app.schemas import SimulatorRunRequest
@@ -10,9 +13,20 @@ router = APIRouter(prefix="/simulator", tags=["Attack Simulator & Gateway Mode S
 
 
 @router.get("/scenarios")
-def list_attack_scenarios():
+def list_attack_scenarios(
+    upstream_id: int = Query(1),
+    session: Session = Depends(get_session),
+):
+    upstream = session.get(Upstream, upstream_id)
+    if not upstream:
+        raise HTTPException(status_code=404, detail="Selected API project was not found")
     return {
         "gateway_enabled": gateway_state.gateway_enabled,
+        "upstream": {
+            "id": upstream.id,
+            "name": upstream.name,
+            "slug": upstream.slug,
+        },
         "scenarios": SCENARIO_CATALOG,
     }
 
@@ -39,4 +53,4 @@ async def run_attack_simulation(
     request: Request,
     _user: User = Depends(require_roles(["admin", "analyst", "developer"])),
 ):
-    return await execute_attack_scenario(payload.scenario_id, request.app)
+    return await execute_attack_scenario(payload.scenario_id, request.app, payload.upstream_id)

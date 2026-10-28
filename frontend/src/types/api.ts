@@ -10,6 +10,7 @@ export interface UserProfile {
 
 export interface TrafficLogItem {
   id: number;
+  upstream_id?: number;
   ts: string;
   request_id: string;
   client_ip: string;
@@ -31,6 +32,7 @@ export interface TrafficLogItem {
 
 export interface AlertItem {
   id: number;
+  upstream_id?: number;
   ts: string;
   updated_at?: string;
   severity: 'critical' | 'high' | 'medium' | 'low' | string;

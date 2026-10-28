@@ -1,10 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 import httpx
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import ClientBaseline, Route, User
+from app.models import ClientBaseline, Route, Upstream, User
 from app.schemas import RateLimitBurstTestRequest
 from app.api.v1.deps import require_roles
 from app.gateway.ratelimit import rate_limiter
@@ -13,8 +13,15 @@ router = APIRouter(prefix="/ratelimits", tags=["Rate Limiting & Velocity Studio"
 
 
 @router.get("")
-def get_rate_limits_overview(session: Session = Depends(get_session)):
-    routes = session.exec(select(Route).where(Route.registered == True).order_by(Route.id)).all()
+def get_rate_limits_overview(
+    upstream_id: int = Query(1),
+    session: Session = Depends(get_session),
+):
+    routes = session.exec(
+        select(Route)
+        .where(Route.registered == True, Route.upstream_id == upstream_id)
+        .order_by(Route.id)
+    ).all()
     baselines = session.exec(select(ClientBaseline).order_by(ClientBaseline.last_zscore.desc())).all()
 
     return {
@@ -83,6 +90,7 @@ def update_route_rate_limit(
 async def run_rate_limit_burst_test(
     payload: RateLimitBurstTestRequest,
     request: Request,
+    session: Session = Depends(get_session),
 ):
     """
     Simulates N rapid requests through /gw/{path} from a test client IP and returns
@@ -93,6 +101,10 @@ async def run_rate_limit_burst_test(
 
     count = min(max(1, payload.request_count), 60)
     clean_path = payload.path.lstrip("/")
+    upstream = session.get(Upstream, payload.upstream_id)
+    if not upstream:
+        raise HTTPException(status_code=404, detail="Selected API project was not found")
+    gateway_path = f"/gw/{upstream.slug}/{clean_path}"
     jwt_token = mint_demo_jwt(sub="burst-tester", role="user")["token"]
 
     results = []
@@ -105,9 +117,9 @@ async def run_rate_limit_burst_test(
                 "User-Agent": "SentinelGW-BurstTester/1.0",
             }
             if payload.method.upper() == "POST":
-                resp = await client.post(f"/gw/{clean_path}", json={"code": "BURST50"}, headers=headers)
+                resp = await client.post(gateway_path, json={"code": "BURST50"}, headers=headers)
             else:
-                resp = await client.get(f"/gw/{clean_path}", headers=headers)
+                resp = await client.get(gateway_path, headers=headers)
 
             results.append({
                 "seq": i,
@@ -123,7 +135,9 @@ async def run_rate_limit_burst_test(
     throttled_cnt = sum(1 for r in results if r["status_code"] == 429)
 
     return {
-        "target": f"{payload.method.upper()} /gw/{clean_path}",
+        "upstream_id": upstream.id,
+        "project_name": upstream.name,
+        "target": f"{payload.method.upper()} {gateway_path}",
         "client_ip": payload.client_ip,
         "total_sent": count,
         "allowed_count": allowed_cnt,

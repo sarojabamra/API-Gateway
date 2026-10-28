@@ -74,7 +74,7 @@ export const LoginPage: React.FC = () => {
       role: 'analyst' as UserRole,
       title: 'SOC Security Analyst',
       email: 'analyst@sentinel.local',
-      desc: 'Triage alerts, run AI analysis, block IPs/tokens & launch attack simulator',
+      desc: 'Triage alerts, inspect request forensics, block IPs/tokens & run simulations',
       icon: Terminal,
       badge: 'SOC Ops',
     },
@@ -158,17 +158,17 @@ export const LoginPage: React.FC = () => {
           </form>
         </div>
 
-        {/* Right: One-Click RBAC Persona Demo Cards */}
+        {/* Right: Role Presets */}
         <div className="lg:col-span-7 space-y-4">
           <div>
             <span className="text-xs font-mono uppercase tracking-wider text-cyan-400">
-              Instant Role-Based Access Control (RBAC) Evaluation
+              Role-Based Access Control
             </span>
             <h2 className="text-2xl font-bold text-white mt-1">
-              One-Click Persona Sign-In
+              Quick Sign-In by Role
             </h2>
             <p className="text-xs text-slate-400 mt-1">
-              Select any role below to immediately enter the platform with that persona&apos;s permissions and default landing workflow.
+              Select a role profile to sign in with its assigned permissions and default workspace.
             </p>
           </div>
 

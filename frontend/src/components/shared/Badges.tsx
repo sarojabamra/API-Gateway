@@ -54,12 +54,12 @@ export const OwaspBadge: React.FC<{ owaspId?: string | null; clickable?: boolean
     API10: 'Unsafe API',
   };
   const content = (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-mono hover:bg-indigo-500/25 transition">
+    <span className="inline-flex items-center gap-1 whitespace-nowrap px-2 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs font-mono hover:bg-indigo-500/25 transition">
       <span className="font-bold text-indigo-200">{owaspId}</span>
       {labels[owaspId] && <span className="text-indigo-300/80">· {labels[owaspId]}</span>}
     </span>
   );
-  return clickable ? <Link to="/owasp">{content}</Link> : content;
+  return clickable ? <Link to="/simulator">{content}</Link> : content;
 };
 
 export const DecisionBadge: React.FC<{ decision: string }> = ({ decision }) => {

@@ -1,12 +1,15 @@
 import json
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+import httpx
 from sqlmodel import Session, select
 import yaml
 
 from app.db import get_session
-from app.models import Policy, Route, Upstream, User
+from app.models import Policy, Route, Upstream, User, to_ist_iso
 from app.schemas import OpenAPIImportRequest, RouteCreateRequest
 from app.api.v1.deps import require_roles
 
@@ -30,7 +33,7 @@ def get_inventory(session: Session = Depends(get_session)):
                 "base_url": u.base_url,
                 "auth_mode": u.auth_mode,
                 "enabled": u.enabled,
-                "created_at": u.created_at.isoformat(),
+                "created_at": to_ist_iso(u.created_at),
             }
             for u in upstreams
         ],
@@ -50,7 +53,7 @@ def get_inventory(session: Session = Depends(get_session)):
                 "bola_check_enabled": r.bola_check_enabled,
                 "response_redact_fields": json.loads(r.response_redact_fields_json or "[]"),
                 "hit_count": r.hit_count,
-                "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+                "last_seen_at": to_ist_iso(r.last_seen_at),
             }
             for r in registered_routes
         ],
@@ -62,7 +65,7 @@ def get_inventory(session: Session = Depends(get_session)):
                 "path_pattern": r.path_pattern,
                 "description": r.description,
                 "hit_count": r.hit_count,
-                "last_seen_at": r.last_seen_at.isoformat() if r.last_seen_at else None,
+                "last_seen_at": to_ist_iso(r.last_seen_at),
             }
             for r in shadow_routes
         ],
@@ -222,7 +225,9 @@ def import_openapi_spec(
     Parses an OpenAPI 3.0 JSON or YAML specification and auto-registers routes
     with authentication, role requirements, and schema metadata.
     """
-    raw = payload.spec_content.strip()
+    raw = (payload.spec_content or payload.content or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Please paste your OpenAPI JSON or YAML content")
     try:
         if raw.startswith("{"):
             spec: Dict[str, Any] = json.loads(raw)
@@ -248,9 +253,15 @@ def import_openapi_spec(
                 op_spec = {}
 
             summary = op_spec.get("summary") or op_spec.get("description") or f"Imported from OpenAPI ({m_upper} {path_pattern})"
-            is_admin = "admin" in path_pattern.lower() or "admin" in str(op_spec.get("tags", "")).lower()
+            has_security = bool(op_spec.get("security") or spec.get("security"))
+            path_lower = path_pattern.lower()
+            is_public_bootstrap = any(
+                p in path_lower
+                for p in ("/auth/login", "/auth/jwt/login", "/auth/register", "/login", "/register", "/health")
+            )
+            is_admin = "admin" in path_lower or "admin" in str(op_spec.get("tags", "")).lower()
             has_id_param = "{" in path_pattern
-            is_sensitive = any(k in path_pattern.lower() for k in ("coupon", "checkout", "order", "register", "transfer"))
+            is_sensitive = any(k in path_lower for k in ("coupon", "checkout", "order", "register", "transfer", "login"))
 
             existing = session.exec(
                 select(Route).where(
@@ -263,6 +274,7 @@ def import_openapi_spec(
             if existing:
                 existing.registered = True
                 existing.description = summary
+                existing.auth_required = False if is_public_bootstrap else has_security
                 session.add(existing)
                 imported.append({"method": m_upper, "path_pattern": path_pattern, "action": "updated"})
             else:
@@ -271,7 +283,7 @@ def import_openapi_spec(
                     method=m_upper,
                     path_pattern=path_pattern,
                     description=summary,
-                    auth_required=not any(p in path_pattern for p in ("/auth/login", "/auth/register")),
+                    auth_required=False if is_public_bootstrap else has_security,
                     required_role="admin" if is_admin else None,
                     rate_limit_rpm=20 if is_sensitive else 60,
                     burst_capacity=5 if is_sensitive else 15,
@@ -284,3 +296,224 @@ def import_openapi_spec(
 
     session.commit()
     return {"status": "imported", "imported_count": len(imported), "routes": imported}
+
+
+class SwaggerSyncInput(BaseModel):
+    base_url: Optional[str] = None
+    target_url: Optional[str] = None
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    make_default: bool = True
+    set_as_default: Optional[bool] = None
+
+
+def _derive_slug_and_name(url: str, custom_name: Optional[str], custom_slug: Optional[str]):
+    parsed = urlparse(url if "://" in url else f"http://{url}")
+    host = (parsed.hostname or "api").replace(".", "-")
+    port = f"-{parsed.port}" if parsed.port else ""
+    auto_slug = (custom_slug or f"{host}{port}").strip().lower().replace(" ", "-")
+    auto_name = (custom_name or f"API ({parsed.netloc or url})").strip()
+    return auto_name, auto_slug
+
+
+async def _discover_api_backend_from_frontend(frontend_url: str, client: httpx.AsyncClient) -> Optional[str]:
+    """
+    If a user enters a Next.js / React frontend URL (e.g. https://portfolio.example.com)
+    whose /openapi.json returns a 404 HTML page, inspects the frontend's HTML/JS bundles
+    or common subdomains (backend.<domain>, api.<domain>) to automatically discover the
+    actual FastAPI / REST backend server URL!
+    """
+    try:
+        r = await client.get(frontend_url, timeout=8.0)
+        html = r.text or ""
+        script_urls = re.findall(r'src=["\'](/_next/static/[^"\']+\.js|/assets/[^"\']+\.js)["\']', html)
+        candidate_urls: List[str] = []
+
+        for s_path in script_urls[:8]:
+            js_r = await client.get(frontend_url.rstrip("/") + s_path, timeout=8.0)
+            for match in re.findall(r'https?://(?:backend|api)[a-zA-Z0-9._-]+(?::\d+)?', js_r.text or ""):
+                if match not in candidate_urls:
+                    candidate_urls.append(match.rstrip("/"))
+
+        parsed = urlparse(frontend_url)
+        host = parsed.hostname or ""
+        parts = host.split(".")
+        if len(parts) >= 2:
+            root_domain = ".".join(parts[-2:])
+            for prefix in ("backend", "api"):
+                cand = f"{parsed.scheme or 'https'}://{prefix}.{root_domain}"
+                if cand not in candidate_urls and cand != frontend_url:
+                    candidate_urls.append(cand)
+
+        for cand in candidate_urls:
+            try:
+                spec_r = await client.get(f"{cand}/openapi.json", timeout=6.0)
+                if spec_r.status_code == 200 and "paths" in (spec_r.text or ""):
+                    return cand
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+@router.post("/sync-swagger-url")
+async def sync_swagger_from_url(
+    payload: SwaggerSyncInput,
+    session: Session = Depends(get_session),
+    _user: User = Depends(require_roles(["admin", "developer"])),
+):
+    """
+    Connects any local or deployed backend URL (on any port or domain),
+    fetches its OpenAPI/Swagger spec if available, registers its endpoints,
+    and activates it so /gw/* and /gw/docs proxy through SentinelGW.
+    """
+    raw_url = (payload.base_url or payload.target_url or "").strip()
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="Please enter a backend URL (e.g. http://127.0.0.1:8001)")
+    make_default = payload.set_as_default if payload.set_as_default is not None else payload.make_default
+
+    clean_url = raw_url.rstrip("/")
+    if not clean_url.startswith("http://") and not clean_url.startswith("https://"):
+        clean_url = f"http://{clean_url}"
+    if clean_url.endswith("/docs"):
+        clean_url = clean_url[:-5].rstrip("/")
+    elif clean_url.endswith("/openapi.json"):
+        clean_url = clean_url[:-13].rstrip("/")
+
+    # If the user pasted a frontend URL (e.g. https://portfolio.sahilpatel.online) instead of its backend URL,
+    # check if /openapi.json is on a discovered backend URL (e.g. https://backend.sahilpatel.online)
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as probe_client:
+            probe_resp = await probe_client.get(f"{clean_url}/openapi.json")
+            if probe_resp.status_code != 200 or "paths" not in (probe_resp.text or ""):
+                discovered = await _discover_api_backend_from_frontend(clean_url, probe_client)
+                if discovered:
+                    clean_url = discovered
+    except Exception:
+        pass
+
+    derived_name, clean_slug = _derive_slug_and_name(clean_url, payload.name, payload.slug)
+
+    # 1. Create or update Upstream (match by base_url or slug so any port/domain gets its own clean entry)
+    up = session.exec(
+        select(Upstream).where((Upstream.base_url == clean_url) | (Upstream.slug == clean_slug))
+    ).first()
+    if not up:
+        up = Upstream(
+            name=derived_name,
+            slug=clean_slug,
+            base_url=clean_url,
+            auth_mode="none",
+            enabled=make_default,
+        )
+        session.add(up)
+        session.commit()
+        session.refresh(up)
+    else:
+        up.name = derived_name
+        up.slug = clean_slug
+        up.base_url = clean_url
+        session.add(up)
+        session.commit()
+        session.refresh(up)
+
+    if make_default:
+        for other in session.exec(select(Upstream)).all():
+            other.enabled = (other.id == up.id)
+            session.add(other)
+        session.commit()
+
+    # 2. Try fetching /openapi.json from the target server
+    imported_routes: List[Dict[str, Any]] = []
+    openapi_reachable = False
+    openapi_error = None
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            resp = await client.get(f"{clean_url}/openapi.json")
+            if resp.status_code == 200:
+                openapi_reachable = True
+                spec = resp.json()
+                title = (spec.get("info") or {}).get("title")
+                if title and not payload.name:
+                    up.name = f"{title} ({clean_url})"
+                    session.add(up)
+
+                paths_obj = spec.get("paths") or {}
+                for path_pattern, methods_map in paths_obj.items():
+                    if not isinstance(methods_map, dict):
+                        continue
+                    for method_key, op_spec in methods_map.items():
+                        m_upper = method_key.upper()
+                        if m_upper not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                            continue
+                        if not isinstance(op_spec, dict):
+                            op_spec = {}
+
+                        summary = op_spec.get("summary") or op_spec.get("description") or f"{m_upper} {path_pattern}"
+                        has_security = bool(op_spec.get("security"))
+                        path_lower = path_pattern.lower()
+                        tags_lower = str(op_spec.get("tags", "")).lower()
+                        is_admin = "admin" in path_lower or "admin" in tags_lower
+                        has_id_param = "{" in path_pattern
+                        is_sensitive = any(
+                            key in path_lower
+                            for key in ("checkout", "order", "coupon", "payment", "transfer", "login")
+                        )
+                        existing = session.exec(
+                            select(Route).where(
+                                Route.upstream_id == up.id,
+                                Route.method == m_upper,
+                                Route.path_pattern == path_pattern,
+                            )
+                        ).first()
+
+                        if existing:
+                            existing.registered = True
+                            existing.description = summary
+                            existing.auth_required = has_security
+                            existing.required_role = "admin" if is_admin else existing.required_role
+                            existing.bola_check_enabled = has_id_param
+                            existing.is_sensitive_flow = is_sensitive
+                            session.add(existing)
+                            imported_routes.append({"method": m_upper, "path_pattern": path_pattern, "action": "updated"})
+                        else:
+                            new_route = Route(
+                                upstream_id=up.id,
+                                method=m_upper,
+                                path_pattern=path_pattern,
+                                description=summary,
+                                auth_required=has_security,
+                                required_role="admin" if is_admin else None,
+                                rate_limit_rpm=20 if is_sensitive else 60,
+                                burst_capacity=5 if is_sensitive else 15,
+                                is_sensitive_flow=is_sensitive,
+                                bola_check_enabled=has_id_param,
+                                registered=True,
+                            )
+                            session.add(new_route)
+                            imported_routes.append({"method": m_upper, "path_pattern": path_pattern, "action": "created"})
+                session.commit()
+            else:
+                openapi_error = f"Target returned HTTP {resp.status_code} on /openapi.json"
+    except Exception as exc:
+        openapi_error = str(exc)
+
+    return {
+        "status": "connected",
+        "base_url": up.base_url,
+        "imported_routes": len(imported_routes),
+        "upstream": {
+            "id": up.id,
+            "name": up.name,
+            "slug": up.slug,
+            "base_url": up.base_url,
+            "enabled": up.enabled,
+        },
+        "openapi_reachable": openapi_reachable,
+        "imported_count": len(imported_routes),
+        "openapi_error": openapi_error,
+        "gateway_swagger_url": "/gw/docs" if up.enabled else f"/gw/{up.slug}/docs",
+    }
+

@@ -18,9 +18,13 @@ interface GatewayState {
   selectedRequestId: number | null;
   liveStreamPaused: boolean;
   liveTraffic: TrafficLogItem[];
+  trafficTick: number;
   liveAlerts: AlertItem[];
   toasts: ToastNotification[];
   roleGuideOpen: boolean;
+  selectedProjectId: number | null;
+  selectedProjectName: string;
+  selectedProjectSlug: string;
 
   setAuth: (token: string, user: UserProfile) => void;
   logout: () => void;
@@ -36,6 +40,7 @@ interface GatewayState {
   addToast: (toast: Omit<ToastNotification, 'id'>) => void;
   dismissToast: (id: string) => void;
   setRoleGuideOpen: (open: boolean) => void;
+  setSelectedProject: (id: number, name: string, slug: string) => void;
   canMutate: (allowedRoles?: UserRole[]) => boolean;
 }
 
@@ -57,9 +62,13 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   selectedRequestId: null,
   liveStreamPaused: false,
   liveTraffic: [],
+  trafficTick: 0,
   liveAlerts: [],
   toasts: [],
   roleGuideOpen: false,
+  selectedProjectId: Number(localStorage.getItem('sentinel_project_id')) || null,
+  selectedProjectName: localStorage.getItem('sentinel_project_name') || '',
+  selectedProjectSlug: localStorage.getItem('sentinel_project_slug') || '',
 
   setAuth: (token, user) => {
     localStorage.setItem('sentinel_token', token);
@@ -84,6 +93,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   pushLiveTraffic: (item) => {
     if (get().liveStreamPaused) return;
     set((state) => ({
+      trafficTick: state.trafficTick + 1,
       liveTraffic: [item, ...state.liveTraffic.filter((x) => x.request_id !== item.request_id)].slice(0, 120),
     }));
   },
@@ -92,6 +102,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     set((state) => ({
       liveAlerts: [alert, ...state.liveAlerts.filter((a) => a.id !== alert.id)].slice(0, 50),
     }));
+    if (alert.upstream_id && alert.upstream_id !== get().selectedProjectId) return;
     get().addToast({
       title: `[${alert.owasp_id}] ${alert.severity.toUpperCase()} ALERT`,
       message: `${alert.title} (${alert.client_ip})`,
@@ -111,6 +122,12 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
   setRoleGuideOpen: (roleGuideOpen) => set({ roleGuideOpen }),
+  setSelectedProject: (selectedProjectId, selectedProjectName, selectedProjectSlug) => {
+    localStorage.setItem('sentinel_project_id', String(selectedProjectId));
+    localStorage.setItem('sentinel_project_name', selectedProjectName);
+    localStorage.setItem('sentinel_project_slug', selectedProjectSlug);
+    set({ selectedProjectId, selectedProjectName, selectedProjectSlug });
+  },
 
   canMutate: (allowedRoles = ['admin', 'analyst', 'developer']) => {
     const role = get().user?.role || 'viewer';

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import Alert, BlocklistEntry, ClientBaseline, Policy, RequestLog, RevokedToken, User
+from app.models import Alert, BlocklistEntry, ClientBaseline, Policy, RequestLog, RevokedToken, User, to_ist_iso
 from app.schemas import AlertActionRequest, AlertBulkActionRequest
 from app.api.v1.deps import require_roles
 from app.detection.ai_triage import generate_ai_triage_summary
@@ -19,11 +19,21 @@ def list_alerts(
     status: Optional[str] = None,
     owasp_id: Optional[str] = None,
     search: Optional[str] = None,
+    upstream_id: int = Query(1),
     session: Session = Depends(get_session),
 ):
     alerts = session.exec(select(Alert).order_by(Alert.ts.desc())).all()
     items = []
+    project_alerts = []
     for a in alerts:
+        try:
+            evidence = json.loads(a.evidence_json or "{}")
+            alert_upstream_id = int(evidence.get("upstream_id", 1))
+        except Exception:
+            alert_upstream_id = 1
+        if alert_upstream_id != upstream_id:
+            continue
+        project_alerts.append(a)
         if severity and a.severity != severity:
             continue
         if status and a.status != status:
@@ -36,8 +46,9 @@ def list_alerts(
                 continue
         items.append({
             "id": a.id,
-            "ts": a.ts.isoformat(),
-            "updated_at": a.updated_at.isoformat(),
+            "upstream_id": alert_upstream_id,
+            "ts": to_ist_iso(a.ts),
+            "updated_at": to_ist_iso(a.updated_at),
             "severity": a.severity,
             "type": a.type,
             "owasp_id": a.owasp_id,
@@ -52,13 +63,13 @@ def list_alerts(
         })
 
     counts = {
-        "total": len(alerts),
-        "open": sum(1 for a in alerts if a.status == "open"),
-        "investigating": sum(1 for a in alerts if a.status == "investigating"),
-        "resolved": sum(1 for a in alerts if a.status == "resolved"),
-        "false_positive": sum(1 for a in alerts if a.status == "false_positive"),
-        "critical": sum(1 for a in alerts if a.severity == "critical" and a.status in ("open", "investigating")),
-        "high": sum(1 for a in alerts if a.severity == "high" and a.status in ("open", "investigating")),
+        "total": len(project_alerts),
+        "open": sum(1 for a in project_alerts if a.status == "open"),
+        "investigating": sum(1 for a in project_alerts if a.status == "investigating"),
+        "resolved": sum(1 for a in project_alerts if a.status == "resolved"),
+        "false_positive": sum(1 for a in project_alerts if a.status == "false_positive"),
+        "critical": sum(1 for a in project_alerts if a.severity == "critical" and a.status in ("open", "investigating")),
+        "high": sum(1 for a in project_alerts if a.severity == "high" and a.status in ("open", "investigating")),
     }
     return {"items": items, "summary": counts}
 
@@ -87,6 +98,12 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
     alert = session.get(Alert, alert_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    try:
+        alert_evidence = json.loads(alert.evidence_json or "{}")
+        alert_upstream_id = int(alert_evidence.get("upstream_id", 1))
+    except Exception:
+        alert_evidence = {}
+        alert_upstream_id = 1
 
     req_ids: List[str] = json.loads(alert.related_request_ids_json or "[]")
     related_logs = []
@@ -95,12 +112,20 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
         related_logs = list(logs)
     if not related_logs:
         logs = session.exec(
-            select(RequestLog).where(RequestLog.client_ip == alert.client_ip).order_by(RequestLog.ts.desc())
+            select(RequestLog).where(
+                RequestLog.client_ip == alert.client_ip,
+                RequestLog.upstream_id == alert_upstream_id,
+            ).order_by(RequestLog.ts.desc())
         ).all()
         related_logs = list(logs[:15])
 
     # Offender profile telemetry
-    all_ip_logs = session.exec(select(RequestLog).where(RequestLog.client_ip == alert.client_ip)).all()
+    all_ip_logs = session.exec(
+        select(RequestLog).where(
+            RequestLog.client_ip == alert.client_ip,
+            RequestLog.upstream_id == alert_upstream_id,
+        )
+    ).all()
     blocked_ip_entry = session.exec(
         select(BlocklistEntry).where(
             BlocklistEntry.target_type == "ip",
@@ -110,14 +135,16 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
     ).first()
 
     baseline = session.exec(
-        select(ClientBaseline).where(ClientBaseline.client_key == (alert.user_sub or alert.client_ip))
+        select(ClientBaseline).where(
+            ClientBaseline.client_key == f"{alert_upstream_id}:{alert.user_sub or alert.client_ip}"
+        )
     ).first()
 
     ai_parsed = json.loads(alert.ai_summary_json) if alert.ai_summary_json else None
     timeline_items = [
         {
             "id": r.id,
-            "ts": r.ts.isoformat(),
+            "ts": to_ist_iso(r.ts),
             "request_id": r.request_id,
             "method": r.method,
             "path": r.path,
@@ -150,8 +177,8 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
     }
     alert_dict = {
         "id": alert.id,
-        "ts": alert.ts.isoformat(),
-        "updated_at": alert.updated_at.isoformat(),
+        "ts": to_ist_iso(alert.ts),
+        "updated_at": to_ist_iso(alert.updated_at),
         "severity": alert.severity,
         "type": alert.type,
         "owasp_id": alert.owasp_id,
@@ -164,7 +191,8 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
         "status": alert.status,
         "assigned_to": alert.assigned_to,
         "notes": json.loads(alert.notes_json or "[]"),
-        "evidence": json.loads(alert.evidence_json or "{}"),
+        "evidence": alert_evidence,
+        "upstream_id": alert_upstream_id,
         "ai_summary": ai_parsed,
         "ai_triage": ai_parsed,
     }
@@ -189,7 +217,7 @@ async def execute_alert_action(
         raise HTTPException(status_code=404, detail="Alert not found")
 
     notes = json.loads(alert.notes_json or "[]")
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = to_ist_iso(datetime.now(timezone.utc))
 
     if payload.action == "update_status" and payload.status:
         alert.status = payload.status

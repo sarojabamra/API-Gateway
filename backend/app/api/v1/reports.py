@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import Alert, BlocklistEntry, Policy, RequestLog, Route
+from app.models import Alert, BlocklistEntry, Policy, RequestLog, Route, to_ist_iso
 
 router = APIRouter(prefix="/reports", tags=["Executive Reports & CSV/PDF Export"])
 
@@ -37,7 +37,7 @@ def generate_executive_report(
     posture_score = min(100, max(50, int((enforcing_policies / max(1, len(policies))) * 90 + (10 if shadow_count == 0 else 4))))
 
     return {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "generated_at": to_ist_iso(datetime.now(timezone.utc)),
         "time_range": time_range,
         "posture_score": posture_score,
         "executive_metrics": {
@@ -60,7 +60,7 @@ def generate_executive_report(
         "top_alerts": [
             {
                 "id": a.id,
-                "ts": a.ts.isoformat(),
+                "ts": to_ist_iso(a.ts),
                 "severity": a.severity,
                 "owasp_id": a.owasp_id,
                 "title": a.title,
@@ -96,7 +96,7 @@ def export_traffic_csv(session: Session = Depends(get_session)):
     for r in logs:
         writer.writerow([
             r.id,
-            r.ts.isoformat(),
+            to_ist_iso(r.ts),
             r.request_id,
             r.client_ip,
             r.user_sub or "",
@@ -138,7 +138,7 @@ def export_alerts_csv(session: Session = Depends(get_session)):
     for a in alerts:
         writer.writerow([
             a.id,
-            a.ts.isoformat(),
+            to_ist_iso(a.ts),
             a.severity,
             a.owasp_id,
             a.type,

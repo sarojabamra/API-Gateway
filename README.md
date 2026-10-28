@@ -51,6 +51,38 @@ docker compose up --build
 
 ---
 
+## How SentinelGW Protects Your Application
+
+1. **Any Caller Sends a Request**: Your web/mobile app, Postman, `curl`, or an external client calls `http://localhost:8000/gw/...` (or `/gw/docs` for the protected Swagger UI).
+2. **SentinelGW Inspects & Enforces Live**: Blocks SQL Injection, SSRF, forged/expired JWT tokens, object ID tampering (BOLA), and rate-limit floods in `<5ms`, and automatically quarantines critical offending IPs.
+3. **Clean Traffic Reaches Your Backend**: Only validated requests are forwarded to your upstream service (e.g. `:8001`, `:2340`, or any cloud URL), with sensitive response fields masked before returning to the caller.
+
+---
+
+## How to Use SentinelGW by Role
+
+- **Platform Administrator (`admin@sentinel.local`)**:
+  - Manage users and RBAC roles in **Users & Access** (`/settings`) and reset or re-seed telemetry data.
+  - Control the Gateway Master Protection Switch (`ON`/`OFF`) in the top bar or Attack Simulator.
+  - Configure global and per-project JWT signing secrets, issuer/audience binding, and automated blocklist rules.
+- **SOC Security Analyst (`analyst@sentinel.local`)**:
+  - Monitor real-time traffic in **Overview** (`/`) and **Live Traffic** (`/traffic`).
+  - Investigate correlated incidents in **Security Alerts** (`/alerts/:id`) and review automated triage findings.
+  - Execute containment actions: block offending IPs, block user principals, or revoke JWT `jti` identifiers.
+  - Tune policies between `Monitor` (dry-run) and `Enforce` (block) in **Security Policies** (`/policies`).
+- **API Owner / Developer (`dev@sentinel.local`)**:
+  - Register upstream APIs and import OpenAPI 3.0 JSON/YAML specs in **API Inventory** (`/inventory`).
+  - Review discovered Shadow APIs (`OWASP API9`) and register or block undocumented routes.
+  - Configure per-route rate limits and token bucket bursts (`/rate-limits`) and test burst behavior.
+  - Validate tokens with the 8-step JWT Token Tester (`/auth-settings`) and manage consumer API keys.
+- **Compliance Auditor (`viewer@sentinel.local`)**:
+  - Audit OWASP API Security Top 10 (2023) coverage in **OWASP Top 10** (`/owasp`).
+  - Review `p50`/`p95`/`p99` gateway latency percentiles and client rate anomalies in **Analytics** (`/analytics`).
+  - Export CSV traffic/alert logs and printable summary reports in **Reports** (`/reports`).
+
+---
+
 ## Documentation
 
+- **[Project Proposal & Implementation Plan](docs/PROJECT_PROPOSAL_AND_IMPLEMENTATION_PLAN.md)**: Planning-phase overview for project managers covering objectives, scope, architecture, features, delivery phases, risks, acceptance criteria, and success measures.
 - **[Role-Based User & Operational Guide](docs/ROLE_BASED_USER_GUIDE.md)**: Complete walkthroughs for `Admin`, `SOC Analyst`, `API Developer`, `Compliance Viewer`, and `API Consumer` roles, plus a 5-minute Judge Demo script.

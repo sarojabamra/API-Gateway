@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Pause, Play, RefreshCw, Filter, Eye } from 'lucide-react';
-import { apiFetch } from '../lib/api';
+import { apiFetch, formatTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { DecisionBadge, MethodBadge, OwaspBadge } from '../components/shared/Badges';
 import { TrafficLogItem } from '../types/api';
@@ -12,6 +12,8 @@ export const LiveTrafficPage: React.FC = () => {
     setLiveStreamPaused,
     openRequestDrawer,
     globalSearch,
+    selectedProjectId,
+    selectedProjectName,
   } = useGatewayStore();
 
   const [historyLogs, setHistoryLogs] = useState<TrafficLogItem[]>([]);
@@ -27,6 +29,7 @@ export const LiveTrafficPage: React.FC = () => {
     try {
       const params = new URLSearchParams();
       params.set('limit', '120');
+      if (selectedProjectId) params.set('upstream_id', String(selectedProjectId));
       if (decisionFilter) params.set('decision', decisionFilter);
       if (methodFilter) params.set('method', methodFilter);
       if (statusFilter) params.set('status_class', statusFilter);
@@ -43,7 +46,15 @@ export const LiveTrafficPage: React.FC = () => {
 
   useEffect(() => {
     fetchTraffic();
-  }, [decisionFilter, methodFilter, statusFilter, owaspFilter]);
+  }, [decisionFilter, methodFilter, statusFilter, owaspFilter, selectedProjectId]);
+
+  useEffect(() => {
+    if (liveStreamPaused) return;
+    const interval = setInterval(() => {
+      fetchTraffic();
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [decisionFilter, methodFilter, statusFilter, owaspFilter, liveStreamPaused, selectedProjectId]);
 
   useEffect(() => {
     if (globalSearch) {
@@ -54,6 +65,7 @@ export const LiveTrafficPage: React.FC = () => {
   // Merge WebSocket live stream items with fetched logs
   const mergedMap = new Map<string, TrafficLogItem>();
   for (const item of [...liveTraffic, ...historyLogs]) {
+    if (selectedProjectId && item.upstream_id !== selectedProjectId) continue;
     if (decisionFilter && item.decision !== decisionFilter) continue;
     if (methodFilter && item.method !== methodFilter) continue;
     if (owaspFilter && item.owasp_id !== owaspFilter) continue;
@@ -76,7 +88,9 @@ export const LiveTrafficPage: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-white">Live Gateway Traffic Stream</h1>
+            <h1 className="text-2xl font-bold text-white">
+              {selectedProjectName || 'Project'} Live Gateway Traffic
+            </h1>
             <span
               className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-mono ${
                 liveStreamPaused
@@ -205,7 +219,7 @@ export const LiveTrafficPage: React.FC = () => {
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 uppercase text-[10px]">
-                <th className="py-3 px-4">Time</th>
+                <th className="py-3 px-4">Time (IST)</th>
                 <th className="py-3 px-3">Decision</th>
                 <th className="py-3 px-3">Method & Route</th>
                 <th className="py-3 px-3">Client IP / Principal</th>
@@ -237,7 +251,7 @@ export const LiveTrafficPage: React.FC = () => {
                     className="hover:bg-slate-800/60 cursor-pointer transition"
                   >
                     <td className="py-2.5 px-4 font-mono text-slate-400 whitespace-nowrap">
-                      {new Date(r.ts).toLocaleTimeString()}
+                      {formatTimeIST(r.ts)}
                     </td>
                     <td className="py-2.5 px-3">
                       <DecisionBadge decision={r.decision} />

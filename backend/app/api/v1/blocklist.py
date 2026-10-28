@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import BlocklistEntry, User
+from app.models import BlocklistEntry, User, to_ist_iso
 from app.schemas import BlocklistCreateRequest
 from app.api.v1.deps import require_roles
 from app.gateway.pipeline import gateway_state
@@ -27,8 +27,8 @@ def list_blocklist(session: Session = Depends(get_session)):
                 "owasp_id": b.owasp_id,
                 "source": b.source,
                 "created_by": b.created_by,
-                "created_at": b.created_at.isoformat(),
-                "expires_at": b.expires_at.isoformat() if b.expires_at else None,
+                "created_at": to_ist_iso(b.created_at),
+                "expires_at": to_ist_iso(b.expires_at),
                 "active": b.active,
             }
             for b in entries

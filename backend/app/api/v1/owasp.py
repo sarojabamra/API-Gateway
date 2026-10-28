@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import Alert, Policy, RequestLog
+from app.models import Alert, Policy, RequestLog, to_ist_iso
 
 router = APIRouter(prefix="/owasp", tags=["OWASP API Top 10 (2023) Coverage"])
 
@@ -144,7 +144,7 @@ def get_owasp_coverage(session: Session = Depends(get_session)):
             "events_24h": len(cat_logs),
             "blocked_24h": blocked_24h,
             "alerts_count": len(cat_alerts),
-            "last_alert_ts": cat_alerts[0].ts.isoformat() if cat_alerts else None,
+            "last_alert_ts": to_ist_iso(cat_alerts[0].ts) if cat_alerts else None,
             "last_alert_title": cat_alerts[0].title if cat_alerts else None,
             "policies": [
                 {"id": p.id, "name": p.name, "mode": p.mode, "enabled": p.enabled}

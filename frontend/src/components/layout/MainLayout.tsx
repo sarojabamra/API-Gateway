@@ -11,19 +11,17 @@ import {
   KeyRound,
   Ban,
   BarChart3,
-  ShieldCheck,
   Zap,
   FileSpreadsheet,
   Settings,
-  BookOpen,
   LogOut,
   Power,
   Search,
+  Server,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { useGatewayStore } from '../../store/useGatewayStore';
 import { RequestDetailDrawer } from '../shared/RequestDetailDrawer';
-import { RoleGuideModal } from '../shared/RoleGuideModal';
 import { UserRole } from '../../types/api';
 
 export const MainLayout: React.FC = () => {
@@ -41,19 +39,41 @@ export const MainLayout: React.FC = () => {
     pushLiveAlert,
     toasts,
     dismissToast,
-    setRoleGuideOpen,
     addToast,
+    selectedProjectId,
+    setSelectedProject,
   } = useGatewayStore();
   const navigate = useNavigate();
+  const [projects, setProjects] = React.useState<any[]>([]);
 
-  // Connect WebSocket for live traffic and alerts
+  useEffect(() => {
+    const loadProjects = async () => {
+      try {
+        const res = await apiFetch('/inventory');
+        const items = res.upstreams || [];
+        setProjects(items);
+        if (items.length && !items.some((p: any) => p.id === selectedProjectId)) {
+          const active = items.find((p: any) => p.enabled) || items[0];
+          setSelectedProject(active.id, active.name, active.slug);
+        }
+      } catch {
+        // Project picker remains hidden until the API is available.
+      }
+    };
+    loadProjects();
+  }, [selectedProjectId, setSelectedProject]);
+
+  // Connect WebSocket for live traffic and alerts with automatic reconnect
   useEffect(() => {
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${proto}//${window.location.host}/ws/live`;
     let ws: WebSocket | null = null;
     let pingTimer: any = null;
+    let reconnectTimer: any = null;
+    let unmounted = false;
 
     const connect = () => {
+      if (unmounted) return;
       try {
         ws = new WebSocket(wsUrl);
         ws.onopen = () => {
@@ -73,13 +93,23 @@ export const MainLayout: React.FC = () => {
             // ignore
           }
         };
+        ws.onclose = () => {
+          if (pingTimer) clearInterval(pingTimer);
+          if (!unmounted) {
+            reconnectTimer = setTimeout(connect, 2500);
+          }
+        };
       } catch {
-        // ignore
+        if (!unmounted) {
+          reconnectTimer = setTimeout(connect, 2500);
+        }
       }
     };
     connect();
     return () => {
+      unmounted = true;
       if (pingTimer) clearInterval(pingTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
   }, [pushLiveTraffic, pushLiveAlert]);
@@ -117,31 +147,30 @@ export const MainLayout: React.FC = () => {
 
   const navGroups = [
     {
-      title: '1. Monitor Traffic',
+      title: 'Monitoring',
       items: [
-        { to: '/', label: 'Home Dashboard', icon: LayoutDashboard },
-        { to: '/traffic', label: 'Live Requests', icon: Activity },
+        { to: '/', label: 'Overview', icon: LayoutDashboard },
+        { to: '/traffic', label: 'Live Traffic', icon: Activity },
         { to: '/alerts', label: 'Security Alerts', icon: Bell },
-        { to: '/analytics', label: 'Speed & Trends', icon: BarChart3 },
+        { to: '/analytics', label: 'Analytics', icon: BarChart3 },
       ],
     },
     {
-      title: '2. Connect & Protect APIs',
+      title: 'Gateway & Policies',
       items: [
-        { to: '/inventory', label: 'Connected APIs & Routes', icon: FolderGit2 },
-        { to: '/policies', label: 'Security Rules', icon: Sliders },
+        { to: '/inventory', label: 'API Inventory', icon: FolderGit2 },
+        { to: '/policies', label: 'Security Policies', icon: Sliders },
         { to: '/rate-limits', label: 'Rate Limits', icon: Gauge },
-        { to: '/auth-settings', label: 'Login & JWT Keys', icon: KeyRound },
-        { to: '/blocklist', label: 'Blocked IPs', icon: Ban },
+        { to: '/auth-settings', label: 'Auth & JWT', icon: KeyRound },
+        { to: '/blocklist', label: 'Blocklist', icon: Ban },
       ],
     },
     {
-      title: '3. Test & Export',
+      title: 'Operations',
       items: [
         { to: '/simulator', label: 'Attack Simulator', icon: Zap },
-        { to: '/owasp', label: 'OWASP Top 10 Guide', icon: ShieldCheck },
-        { to: '/reports', label: 'Export Reports', icon: FileSpreadsheet },
-        { to: '/settings', label: 'Team & Roles', icon: Settings },
+        { to: '/reports', label: 'Reports', icon: FileSpreadsheet },
+        { to: '/settings', label: 'Users & Access', icon: Settings },
       ],
     },
   ];
@@ -199,22 +228,15 @@ export const MainLayout: React.FC = () => {
           </nav>
         </div>
 
-        {/* Bottom Help Guide & User Card */}
-        <div className="p-3 border-t border-slate-800 space-y-2">
-          <button
-            onClick={() => setRoleGuideOpen(true)}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/30 transition"
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            How to Use This App
-          </button>
-          <div className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-800">
+        {/* User Card */}
+        <div className="p-3 border-t border-slate-800">
+          <div className="flex items-center justify-between px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-800">
             <div className="truncate pr-2">
               <div className="text-xs font-semibold text-white truncate">
                 {user?.full_name || 'Admin'}
               </div>
-              <div className="text-[11px] font-mono text-cyan-400 uppercase">
-                Role: {user?.role || 'admin'}
+              <div className="text-[11px] font-mono text-slate-400 uppercase">
+                {user?.role || 'admin'}
               </div>
             </div>
             <button
@@ -247,24 +269,46 @@ export const MainLayout: React.FC = () => {
                   navigate('/traffic');
                 }
               }}
-              placeholder="Search IP, URL path, or risk (Press Enter)..."
+              placeholder="Search IP, path, or request ID..."
               className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
             />
           </div>
 
           <div className="flex items-center gap-3 ml-auto">
+            {/* Global project context */}
+            {projects.length > 0 && (
+              <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
+                <Server className="w-3.5 h-3.5 text-cyan-400" />
+                <span className="text-[10px] font-mono uppercase text-slate-500">Monitoring:</span>
+                <select
+                  value={selectedProjectId || ''}
+                  onChange={(e) => {
+                    const project = projects.find((p: any) => p.id === Number(e.target.value));
+                    if (project) setSelectedProject(project.id, project.name, project.slug);
+                  }}
+                  className="max-w-52 bg-slate-950 text-xs font-medium text-slate-200 focus:outline-none"
+                >
+                  {projects.map((project: any) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
             {/* Gateway Master Status Pill */}
             <button
               onClick={handleToggleGateway}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono font-bold border transition ${
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono font-semibold border transition ${
                 gatewayEnabled
                   ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
-                  : 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse'
+                  : 'bg-rose-500/20 text-rose-300 border-rose-500/50'
               }`}
-              title="Turn Gateway Protection ON or OFF"
+              title="Turn Gateway ON or OFF"
             >
               <Power className="w-3.5 h-3.5" />
-              {gatewayEnabled ? 'PROTECTION: ON' : 'PROTECTION: OFF'}
+              {gatewayEnabled ? 'GATEWAY: ON' : 'GATEWAY: OFF'}
             </button>
 
             {/* Time Range Picker */}
@@ -284,22 +328,21 @@ export const MainLayout: React.FC = () => {
               ))}
             </div>
 
-            {/* Instant Role Switcher */}
-            <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1">
-              <span className="text-[10px] font-mono uppercase text-slate-500 mr-1">View As:</span>
-              {(['admin', 'analyst', 'developer', 'viewer'] as UserRole[]).map((r) => (
-                <button
-                  key={r}
-                  onClick={() => handleQuickRoleSwitch(r)}
-                  className={`px-2 py-0.5 rounded text-[11px] font-mono uppercase transition ${
-                    user?.role === r
-                      ? 'bg-indigo-500/25 text-indigo-200 border border-indigo-500/40 font-bold'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {r}
-                </button>
-              ))}
+            {/* Role Switcher */}
+            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
+              <span className="text-[10px] font-mono uppercase text-slate-500">Role:</span>
+              <select
+                value={user?.role || 'viewer'}
+                onChange={(e) => handleQuickRoleSwitch(e.target.value as UserRole)}
+                className="bg-slate-950 text-[11px] font-mono font-semibold uppercase text-slate-200 focus:outline-none cursor-pointer"
+                aria-label="Switch active role"
+              >
+                {(['admin', 'analyst', 'developer', 'viewer'] as UserRole[]).map((role) => (
+                  <option key={role} value={role}>
+                    {role.charAt(0).toUpperCase() + role.slice(1)}
+                  </option>
+                ))}
+              </select>
             </div>
           </div>
         </header>
@@ -330,9 +373,8 @@ export const MainLayout: React.FC = () => {
         </main>
       </div>
 
-      {/* Global Slide-over Request Inspector & Role Guide Modal */}
+      {/* Global Slide-over Request Inspector */}
       <RequestDetailDrawer />
-      <RoleGuideModal />
     </div>
   );
 };

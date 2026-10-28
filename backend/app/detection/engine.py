@@ -2,12 +2,22 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import List
 from sqlmodel import Session, select
-from app.models import Alert, BlocklistEntry, RequestLog
+from app.models import Alert, BlocklistEntry, RequestLog, to_ist_iso
 from app.detection.anomaly import anomaly_detector
 from app.detection.rules import behavioral_tracker
 from app.detection.scoring import compute_threat_score
 from app.detection.ai_triage import generate_ai_triage_summary
 from app.gateway.pipeline import gateway_state
+
+
+def get_alert_upstream_id(alert: Alert) -> int:
+    try:
+        ev = json.loads(alert.evidence_json or "{}")
+        if isinstance(ev, dict) and ev.get("upstream_id") is not None:
+            return int(ev["upstream_id"])
+    except Exception:
+        pass
+    return 1
 
 
 async def process_request_event(session: Session, log_entry: RequestLog) -> List[Alert]:
@@ -22,7 +32,7 @@ async def process_request_event(session: Session, log_entry: RequestLog) -> List
     """
     from app.api.v1.ws import ws_manager
 
-    client_key = log_entry.user_sub or log_entry.client_ip
+    client_key = f"{log_entry.upstream_id or 1}:{log_entry.user_sub or log_entry.client_ip}"
     zscore, _ = anomaly_detector.record_and_score(session, client_key)
     log_entry.anomaly_zscore = zscore
     log_entry.threat_score = compute_threat_score(log_entry, zscore)
@@ -34,19 +44,24 @@ async def process_request_event(session: Session, log_entry: RequestLog) -> List
     created_or_updated_alerts: List[Alert] = []
 
     for rule in triggered_rules:
-        # Deduplicate against an existing open/investigating alert of same type + client_ip within last 30 mins
-        existing = session.exec(
+        # Deduplicate against an existing open/investigating alert of same type + client_ip + upstream_id
+        candidates = session.exec(
             select(Alert).where(
                 Alert.type == rule["type"],
                 Alert.client_ip == log_entry.client_ip,
                 Alert.status.in_(["open", "investigating"]),
             )
-        ).first()
+        ).all()
+        existing = next(
+            (a for a in candidates if get_alert_upstream_id(a) == (log_entry.upstream_id or 1)),
+            None,
+        )
 
         if existing:
             existing.event_count = (existing.event_count or 1) + 1
             existing.updated_at = datetime.now(timezone.utc)
             existing.description = rule["description"]
+            existing.target_path = log_entry.path
             req_ids: List[str] = []
             try:
                 req_ids = json.loads(existing.related_request_ids_json or "[]")
@@ -66,6 +81,7 @@ async def process_request_event(session: Session, log_entry: RequestLog) -> List
             alert_obj = existing
         else:
             evidence = {
+                "upstream_id": log_entry.upstream_id or 1,
                 "method": log_entry.method,
                 "path": log_entry.path,
                 "query_params": log_entry.query_params,
@@ -128,7 +144,8 @@ async def process_request_event(session: Session, log_entry: RequestLog) -> List
         "event": "traffic",
         "data": {
             "id": log_entry.id,
-            "ts": log_entry.ts.isoformat(),
+            "upstream_id": log_entry.upstream_id or 1,
+            "ts": to_ist_iso(log_entry.ts),
             "request_id": log_entry.request_id,
             "client_ip": log_entry.client_ip,
             "user_sub": log_entry.user_sub,
@@ -151,7 +168,8 @@ async def process_request_event(session: Session, log_entry: RequestLog) -> List
             "event": "alert",
             "data": {
                 "id": al.id,
-                "ts": al.ts.isoformat(),
+                "upstream_id": log_entry.upstream_id or 1,
+                "ts": to_ist_iso(al.ts),
                 "severity": al.severity,
                 "type": al.type,
                 "owasp_id": al.owasp_id,

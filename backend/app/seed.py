@@ -16,8 +16,37 @@ from app.models import (
     RevokedToken,
     Route,
     Upstream,
+    UpstreamJWTConfig,
     User,
 )
+
+
+def backfill_route_security_defaults(session: Session) -> None:
+    """Apply safe inferred defaults to routes imported before metadata inference existed."""
+    changed = False
+    for route in session.exec(select(Route).where(Route.registered == True)).all():
+        route_changed = False
+        path_lower = route.path_pattern.lower()
+        if "admin" in path_lower and route.required_role is None:
+            route.required_role = "admin"
+            route.auth_required = True
+            route_changed = True
+        if "{" in route.path_pattern and not route.bola_check_enabled:
+            route.bola_check_enabled = True
+            route_changed = True
+        if any(
+            key in path_lower
+            for key in ("checkout", "order", "coupon", "payment", "transfer", "booking", "login")
+        ) and not route.is_sensitive_flow:
+            route.is_sensitive_flow = True
+            route.rate_limit_rpm = min(route.rate_limit_rpm, 20)
+            route.burst_capacity = min(route.burst_capacity, 5)
+            route_changed = True
+        if route_changed:
+            session.add(route)
+            changed = True
+    if changed:
+        session.commit()
 
 
 def seed_all_data(session: Session, force_reset: bool = False) -> None:
@@ -36,6 +65,7 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
             ApiKey,
             Policy,
             Route,
+            UpstreamJWTConfig,
             Upstream,
             User,
         ):
