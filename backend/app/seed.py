@@ -6,6 +6,7 @@ from sqlmodel import Session, delete, select
 
 from app.api.v1.deps import hash_password
 from app.gateway.auth import hash_api_key
+from app.gateway.policy_engine import infer_route_security
 from app.models import (
     Alert,
     ApiKey,
@@ -25,22 +26,19 @@ def backfill_route_security_defaults(session: Session) -> None:
     """Apply safe inferred defaults to routes imported before metadata inference existed."""
     changed = False
     for route in session.exec(select(Route).where(Route.registered == True)).all():
+        inferred = infer_route_security(route.path_pattern)
         route_changed = False
-        path_lower = route.path_pattern.lower()
-        if "admin" in path_lower and route.required_role is None:
-            route.required_role = "admin"
+        if inferred["required_role"] and route.required_role is None:
+            route.required_role = inferred["required_role"]
             route.auth_required = True
             route_changed = True
-        if "{" in route.path_pattern and not route.bola_check_enabled:
+        if inferred["bola_check_enabled"] and not route.bola_check_enabled:
             route.bola_check_enabled = True
             route_changed = True
-        if any(
-            key in path_lower
-            for key in ("checkout", "order", "coupon", "payment", "transfer", "booking", "login")
-        ) and not route.is_sensitive_flow:
+        if inferred["is_sensitive_flow"] and not route.is_sensitive_flow:
             route.is_sensitive_flow = True
-            route.rate_limit_rpm = min(route.rate_limit_rpm, 20)
-            route.burst_capacity = min(route.burst_capacity, 5)
+            route.rate_limit_rpm = min(route.rate_limit_rpm, inferred["rate_limit_rpm"])
+            route.burst_capacity = min(route.burst_capacity, inferred["burst_capacity"])
             route_changed = True
         if route_changed:
             session.add(route)

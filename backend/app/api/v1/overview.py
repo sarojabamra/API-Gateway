@@ -1,12 +1,12 @@
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-import json
 from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 from app.db import get_session
 from app.models import Alert, BlocklistEntry, RequestLog, Upstream, to_ist, to_ist_iso
 from app.gateway.pipeline import gateway_state
+from app.detection.engine import get_alert_upstream_id
 
 router = APIRouter(prefix="/overview", tags=["Overview Dashboard"])
 
@@ -66,15 +66,7 @@ def get_overview_dashboard(
     all_open_alerts = session.exec(
         select(Alert).where(Alert.status.in_(["open", "investigating"])).order_by(Alert.ts.desc())
     ).all()
-    open_alerts = []
-    for alert in all_open_alerts:
-        try:
-            evidence = json.loads(alert.evidence_json or "{}")
-            alert_upstream_id = int(evidence.get("upstream_id", 1))
-        except Exception:
-            alert_upstream_id = 1
-        if alert_upstream_id == upstream_id:
-            open_alerts.append(alert)
+    open_alerts = [a for a in all_open_alerts if get_alert_upstream_id(a) == upstream_id]
     critical_alerts = sum(1 for a in open_alerts if a.severity == "critical")
     high_alerts = sum(1 for a in open_alerts if a.severity == "high")
 
@@ -165,11 +157,8 @@ def get_overview_dashboard(
             "client_ip": data["client_ip"],
             "total_requests": data["total_requests"],
             "blocked_requests": data["blocked_requests"],
-            "blocked_count": data["blocked_requests"],
             "max_threat_score": data["max_threat_score"],
-            "max_risk_score": data["max_threat_score"],
             "owasp_tags": owasp_list,
-            "top_owasp": owasp_list[0] if owasp_list else "API4:2023",
             "is_blocked": data["client_ip"] in active_ip_blocks,
         })
 
@@ -199,26 +188,20 @@ def get_overview_dashboard(
             "total_requests": total_requests,
             "total_requests_delta_pct": round(((total_requests - prev_total) / prev_total) * 100, 1),
             "blocked_requests": blocked_requests,
-            "blocked_attacks": blocked_requests,
             "blocked_requests_delta_pct": round(((blocked_requests - prev_blocked) / prev_blocked) * 100, 1),
             "block_rate_pct": round((blocked_requests / max(1, total_requests)) * 100, 1),
             "active_alerts": len(open_alerts),
-            "active_alerts_count": len(open_alerts),
             "critical_alerts": critical_alerts,
-            "critical_alerts_count": critical_alerts,
             "high_alerts": high_alerts,
             "avg_latency_ms": avg_latency,
             "latency_delta_ms": round(avg_latency - prev_latency, 2),
             "error_rate_pct": error_rate,
             "unique_clients": unique_clients,
-            "active_clients": unique_clients,
             "blocked_ips_count": len(active_ip_blocks),
         },
         "traffic_series": traffic_series,
-        "time_series": traffic_series,
         "top_endpoints": top_endpoints,
         "owasp_distribution": owasp_distribution,
-        "owasp_breakdown": owasp_distribution,
         "latest_alerts": latest_alerts,
         "top_offenders": top_offenders,
     }

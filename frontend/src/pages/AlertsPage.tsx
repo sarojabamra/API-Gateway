@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { CheckSquare, RefreshCw, ShieldAlert } from 'lucide-react';
+import { CheckSquare, RefreshCw } from 'lucide-react';
 import { apiFetch, formatTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';

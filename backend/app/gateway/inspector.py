@@ -90,17 +90,24 @@ def inspect_ssrf_url(candidate_url: str) -> Optional[str]:
     return None
 
 
+SIGNATURE_RULES = [
+    (PATH_TRAVERSAL_PATTERNS, 85, lambda pat: f"Path traversal / sensitive file probe detected matching '{pat.pattern[:32]}'"),
+    (SQLI_PATTERNS, 90, lambda _pat: "SQL Injection (SQLi) payload signature detected in request"),
+    (NOSQLI_PATTERNS, 85, lambda _pat: "NoSQL Injection operator ($ne/$gt/$where) detected in request"),
+    (XSS_PATTERNS, 80, lambda _pat: "Cross-Site Scripting (XSS) payload detected in request"),
+    (CMD_INJECTION_PATTERNS, 92, lambda _pat: "OS Command Injection signature detected in request"),
+]
+
+
 def inspect_request_payload(
-    method: str,
     path: str,
     query_string: str,
-    headers: Dict[str, str],
     body_text: str,
     max_body_bytes: int = 65536,
     max_page_limit: int = 100,
 ) -> Dict[str, Any]:
     """
-    Performs deep inspection across URL path, query string, headers, and body for:
+    Performs deep inspection across URL path, query string, and body for:
     - Request size & pagination cap violations (OWASP API4)
     - Mass assignment / forbidden input properties (OWASP API3)
     - SSRF URLs in query/body (OWASP API7)
@@ -153,8 +160,7 @@ def inspect_request_payload(
         try:
             body_json = json.loads(body_text)
             if isinstance(body_json, dict):
-                # API3 Mass Assignment check (e.g. registering with role="admin" or setting is_admin_override=True)
-                if path.endswith("/register") and body_json.get("role") == "admin":
+                if str(body_json.get("role", "")).lower() == "admin":
                     return {
                         "violation": True,
                         "http_status": 403,
@@ -194,59 +200,16 @@ def inspect_request_payload(
     # Combine decoded inspection surface for signature checks
     combined_surface = unquote(f"{path}?{query_string}\n{body_text}")
 
-    for pat in PATH_TRAVERSAL_PATTERNS:
-        if pat.search(combined_surface):
-            return {
-                "violation": True,
-                "http_status": 403,
-                "owasp_id": "API8",
-                "policy_type": "signature",
-                "reason": f"Path traversal / sensitive file probe detected matching '{pat.pattern[:32]}'",
-                "threat_score": 85,
-            }
-
-    for pat in SQLI_PATTERNS:
-        if pat.search(combined_surface):
-            return {
-                "violation": True,
-                "http_status": 403,
-                "owasp_id": "API8",
-                "policy_type": "signature",
-                "reason": "SQL Injection (SQLi) payload signature detected in request",
-                "threat_score": 90,
-            }
-
-    for pat in NOSQLI_PATTERNS:
-        if pat.search(combined_surface):
-            return {
-                "violation": True,
-                "http_status": 403,
-                "owasp_id": "API8",
-                "policy_type": "signature",
-                "reason": "NoSQL Injection operator ($ne/$gt/$where) detected in request",
-                "threat_score": 85,
-            }
-
-    for pat in XSS_PATTERNS:
-        if pat.search(combined_surface):
-            return {
-                "violation": True,
-                "http_status": 403,
-                "owasp_id": "API8",
-                "policy_type": "signature",
-                "reason": "Cross-Site Scripting (XSS) payload detected in request",
-                "threat_score": 80,
-            }
-
-    for pat in CMD_INJECTION_PATTERNS:
-        if pat.search(combined_surface):
-            return {
-                "violation": True,
-                "http_status": 403,
-                "owasp_id": "API8",
-                "policy_type": "signature",
-                "reason": "OS Command Injection signature detected in request",
-                "threat_score": 92,
-            }
+    for patterns, score, reason_fn in SIGNATURE_RULES:
+        for pat in patterns:
+            if pat.search(combined_surface):
+                return {
+                    "violation": True,
+                    "http_status": 403,
+                    "owasp_id": "API8",
+                    "policy_type": "signature",
+                    "reason": reason_fn(pat),
+                    "threat_score": score,
+                }
 
     return {"violation": False, "threat_score": 0}

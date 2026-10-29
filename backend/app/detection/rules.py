@@ -164,7 +164,7 @@ class BehavioralTracker:
             })
 
         # 9. Sensitive Business Flow Abuse (API6 - High)
-        if log.owasp_id == "API6" or path.startswith("/coupons/redeem"):
+        if log.owasp_id == "API6":
             hits = self._prune_ts(self.sensitive_flow_hits.get(scope_key, []), 60, now)
             hits.append(now)
             self.sensitive_flow_hits[scope_key] = hits

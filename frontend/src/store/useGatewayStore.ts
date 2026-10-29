@@ -13,7 +13,6 @@ interface GatewayState {
   user: UserProfile | null;
   gatewayEnabled: boolean;
   timeRange: '15m' | '1h' | '24h' | '7d';
-  autoRefresh: boolean;
   globalSearch: string;
   selectedRequestId: number | null;
   liveStreamPaused: boolean;
@@ -21,7 +20,6 @@ interface GatewayState {
   trafficTick: number;
   liveAlerts: AlertItem[];
   toasts: ToastNotification[];
-  roleGuideOpen: boolean;
   selectedProjectId: number | null;
   selectedProjectName: string;
   selectedProjectSlug: string;
@@ -30,7 +28,6 @@ interface GatewayState {
   logout: () => void;
   setGatewayEnabled: (enabled: boolean) => void;
   setTimeRange: (range: '15m' | '1h' | '24h' | '7d') => void;
-  setAutoRefresh: (auto: boolean) => void;
   setGlobalSearch: (q: string) => void;
   openRequestDrawer: (logId: number) => void;
   closeRequestDrawer: () => void;
@@ -39,7 +36,6 @@ interface GatewayState {
   pushLiveAlert: (alert: AlertItem) => void;
   addToast: (toast: Omit<ToastNotification, 'id'>) => void;
   dismissToast: (id: string) => void;
-  setRoleGuideOpen: (open: boolean) => void;
   setSelectedProject: (id: number, name: string, slug: string) => void;
   canMutate: (allowedRoles?: UserRole[]) => boolean;
 }
@@ -57,7 +53,6 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   user: JSON.parse(localStorage.getItem('sentinel_user') || JSON.stringify(DEFAULT_USER)),
   gatewayEnabled: true,
   timeRange: '24h',
-  autoRefresh: true,
   globalSearch: '',
   selectedRequestId: null,
   liveStreamPaused: false,
@@ -65,7 +60,6 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   trafficTick: 0,
   liveAlerts: [],
   toasts: [],
-  roleGuideOpen: false,
   selectedProjectId: Number(localStorage.getItem('sentinel_project_id')) || null,
   selectedProjectName: localStorage.getItem('sentinel_project_name') || '',
   selectedProjectSlug: localStorage.getItem('sentinel_project_slug') || '',
@@ -84,7 +78,6 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
 
   setGatewayEnabled: (gatewayEnabled) => set({ gatewayEnabled }),
   setTimeRange: (timeRange) => set({ timeRange }),
-  setAutoRefresh: (autoRefresh) => set({ autoRefresh }),
   setGlobalSearch: (globalSearch) => set({ globalSearch }),
   openRequestDrawer: (selectedRequestId) => set({ selectedRequestId }),
   closeRequestDrawer: () => set({ selectedRequestId: null }),
@@ -121,7 +114,6 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   dismissToast: (id) =>
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
-  setRoleGuideOpen: (roleGuideOpen) => set({ roleGuideOpen }),
   setSelectedProject: (selectedProjectId, selectedProjectName, selectedProjectSlug) => {
     localStorage.setItem('sentinel_project_id', String(selectedProjectId));
     localStorage.setItem('sentinel_project_name', selectedProjectName);

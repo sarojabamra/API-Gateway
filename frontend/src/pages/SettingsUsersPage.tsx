@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Users, RotateCcw, Plus, CheckCircle2 } from 'lucide-react';
+import { Users, RotateCcw, Plus } from 'lucide-react';
 import { apiFetch, formatDateTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 
@@ -93,29 +93,6 @@ export const SettingsUsersPage: React.FC = () => {
             {reseeding ? 'Resetting...' : 'Reset & Re-Seed Clean Demo Telemetry'}
           </button>
         )}
-      </div>
-
-      {/* RBAC Matrix Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {(data?.rbac_matrix || []).map((rm: any) => (
-          <div key={rm.role} className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-2.5">
-            <div className="flex items-center justify-between">
-              <span className="px-2 py-0.5 rounded bg-cyan-500/15 text-cyan-300 font-mono text-xs uppercase font-bold">
-                {rm.role}
-              </span>
-              <span className="text-[11px] font-mono text-slate-400">{rm.default_account}</span>
-            </div>
-            <div className="font-bold text-sm text-white">{rm.label}</div>
-            <ul className="space-y-1.5 text-xs text-slate-300">
-              {(rm.permissions || []).map((p: string, idx: number) => (
-                <li key={idx} className="flex items-start gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                  <span>{p}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
       </div>
 
       {/* Add User Form (Admin Only) */}

@@ -12,8 +12,67 @@ from app.db import get_session
 from app.models import Policy, Route, Upstream, User, to_ist_iso
 from app.schemas import OpenAPIImportRequest, RouteCreateRequest
 from app.api.v1.deps import require_roles
+from app.gateway.policy_engine import infer_route_security
 
 router = APIRouter(prefix="/inventory", tags=["Protected APIs, Route Registry & Shadow APIs"])
+
+
+def _upsert_openapi_routes(
+    session: Session,
+    upstream_id: int,
+    spec: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    paths_obj: Dict[str, Any] = spec.get("paths") or {}
+    imported: List[Dict[str, Any]] = []
+
+    for path_pattern, methods_map in paths_obj.items():
+        if not isinstance(methods_map, dict):
+            continue
+        for method_key, op_spec in methods_map.items():
+            m_upper = method_key.upper()
+            if m_upper not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                continue
+            if not isinstance(op_spec, dict):
+                op_spec = {}
+
+            summary = (
+                op_spec.get("summary")
+                or op_spec.get("description")
+                or f"{m_upper} {path_pattern}"
+            )
+            meta = infer_route_security(path_pattern, op_spec, spec)
+            existing = session.exec(
+                select(Route).where(
+                    Route.upstream_id == upstream_id,
+                    Route.method == m_upper,
+                    Route.path_pattern == path_pattern,
+                )
+            ).first()
+
+            if existing:
+                existing.registered = True
+                existing.description = summary
+                existing.auth_required = meta["auth_required"]
+                existing.required_role = meta["required_role"] or existing.required_role
+                existing.bola_check_enabled = meta["bola_check_enabled"]
+                existing.is_sensitive_flow = meta["is_sensitive_flow"]
+                session.add(existing)
+                imported.append({"method": m_upper, "path_pattern": path_pattern, "action": "updated"})
+            else:
+                session.add(
+                    Route(
+                        upstream_id=upstream_id,
+                        method=m_upper,
+                        path_pattern=path_pattern,
+                        description=summary,
+                        registered=True,
+                        **meta,
+                    )
+                )
+                imported.append({"method": m_upper, "path_pattern": path_pattern, "action": "created"})
+
+    session.commit()
+    return imported
 
 
 @router.get("")
@@ -77,6 +136,59 @@ class UpstreamCreateInput(BaseModel):
     slug: str
     base_url: str
     auth_mode: str = "jwt"
+
+
+class UpstreamUpdateInput(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    base_url: Optional[str] = None
+    auth_mode: Optional[str] = None
+
+
+@router.put("/upstreams/{upstream_id}")
+def update_upstream(
+    upstream_id: int,
+    payload: UpstreamUpdateInput,
+    session: Session = Depends(get_session),
+    _user: User = Depends(require_roles(["admin", "developer"])),
+):
+    target = session.get(Upstream, upstream_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Upstream API not found")
+
+    if payload.slug is not None:
+        clean_slug = payload.slug.strip().lower().replace(" ", "-")
+        if not clean_slug:
+            raise HTTPException(status_code=400, detail="Slug cannot be empty")
+        # Check if slug is used by another upstream
+        existing = session.exec(
+            select(Upstream).where(Upstream.slug == clean_slug, Upstream.id != upstream_id)
+        ).first()
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Slug '{clean_slug}' is already taken by another project")
+        target.slug = clean_slug
+
+    if payload.name is not None:
+        clean_name = payload.name.strip()
+        if not clean_name:
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+        target.name = clean_name
+
+    if payload.base_url is not None:
+        clean_url = payload.base_url.strip().rstrip("/")
+        if not clean_url:
+            raise HTTPException(status_code=400, detail="Backend URL cannot be empty")
+        if not clean_url.startswith(("http://", "https://")):
+            clean_url = f"http://{clean_url}"
+        target.base_url = clean_url
+
+    if payload.auth_mode is not None:
+        target.auth_mode = payload.auth_mode
+
+    session.add(target)
+    session.commit()
+    session.refresh(target)
+    return target
 
 
 @router.post("/upstreams")
@@ -225,86 +337,26 @@ def import_openapi_spec(
     Parses an OpenAPI 3.0 JSON or YAML specification and auto-registers routes
     with authentication, role requirements, and schema metadata.
     """
-    raw = (payload.spec_content or payload.content or "").strip()
+    raw = (payload.spec_content or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="Please paste your OpenAPI JSON or YAML content")
     try:
-        if raw.startswith("{"):
-            spec: Dict[str, Any] = json.loads(raw)
-        else:
-            spec = yaml.safe_load(raw)
+        spec: Dict[str, Any] = json.loads(raw) if raw.startswith("{") else yaml.safe_load(raw)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to parse OpenAPI JSON/YAML: {exc}")
 
     if not isinstance(spec, dict) or "paths" not in spec:
         raise HTTPException(status_code=400, detail="Invalid OpenAPI specification: missing 'paths' object")
 
-    paths_obj: Dict[str, Any] = spec.get("paths", {})
-    imported: List[Dict[str, Any]] = []
-
-    for path_pattern, methods_map in paths_obj.items():
-        if not isinstance(methods_map, dict):
-            continue
-        for method_key, op_spec in methods_map.items():
-            m_upper = method_key.upper()
-            if m_upper not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
-                continue
-            if not isinstance(op_spec, dict):
-                op_spec = {}
-
-            summary = op_spec.get("summary") or op_spec.get("description") or f"Imported from OpenAPI ({m_upper} {path_pattern})"
-            has_security = bool(op_spec.get("security") or spec.get("security"))
-            path_lower = path_pattern.lower()
-            is_public_bootstrap = any(
-                p in path_lower
-                for p in ("/auth/login", "/auth/jwt/login", "/auth/register", "/login", "/register", "/health")
-            )
-            is_admin = "admin" in path_lower or "admin" in str(op_spec.get("tags", "")).lower()
-            has_id_param = "{" in path_pattern
-            is_sensitive = any(k in path_lower for k in ("coupon", "checkout", "order", "register", "transfer", "login"))
-
-            existing = session.exec(
-                select(Route).where(
-                    Route.upstream_id == payload.upstream_id,
-                    Route.method == m_upper,
-                    Route.path_pattern == path_pattern,
-                )
-            ).first()
-
-            if existing:
-                existing.registered = True
-                existing.description = summary
-                existing.auth_required = False if is_public_bootstrap else has_security
-                session.add(existing)
-                imported.append({"method": m_upper, "path_pattern": path_pattern, "action": "updated"})
-            else:
-                new_route = Route(
-                    upstream_id=payload.upstream_id,
-                    method=m_upper,
-                    path_pattern=path_pattern,
-                    description=summary,
-                    auth_required=False if is_public_bootstrap else has_security,
-                    required_role="admin" if is_admin else None,
-                    rate_limit_rpm=20 if is_sensitive else 60,
-                    burst_capacity=5 if is_sensitive else 15,
-                    is_sensitive_flow=is_sensitive,
-                    bola_check_enabled=has_id_param,
-                    registered=True,
-                )
-                session.add(new_route)
-                imported.append({"method": m_upper, "path_pattern": path_pattern, "action": "created"})
-
-    session.commit()
+    imported = _upsert_openapi_routes(session, payload.upstream_id, spec)
     return {"status": "imported", "imported_count": len(imported), "routes": imported}
 
 
 class SwaggerSyncInput(BaseModel):
-    base_url: Optional[str] = None
-    target_url: Optional[str] = None
+    base_url: str
     name: Optional[str] = None
     slug: Optional[str] = None
     make_default: bool = True
-    set_as_default: Optional[bool] = None
 
 
 def _derive_slug_and_name(url: str, custom_name: Optional[str], custom_slug: Optional[str]):
@@ -318,10 +370,9 @@ def _derive_slug_and_name(url: str, custom_name: Optional[str], custom_slug: Opt
 
 async def _discover_api_backend_from_frontend(frontend_url: str, client: httpx.AsyncClient) -> Optional[str]:
     """
-    If a user enters a Next.js / React frontend URL (e.g. https://portfolio.example.com)
-    whose /openapi.json returns a 404 HTML page, inspects the frontend's HTML/JS bundles
-    or common subdomains (backend.<domain>, api.<domain>) to automatically discover the
-    actual FastAPI / REST backend server URL!
+    If a user enters a Next.js / React frontend URL whose /openapi.json returns a 404 HTML page,
+    inspects the frontend's HTML/JS bundles or common subdomains (backend.<domain>, api.<domain>)
+    to automatically discover the actual FastAPI / REST backend server URL.
     """
     try:
         r = await client.get(frontend_url, timeout=8.0)
@@ -368,21 +419,17 @@ async def sync_swagger_from_url(
     fetches its OpenAPI/Swagger spec if available, registers its endpoints,
     and activates it so /gw/* and /gw/docs proxy through SentinelGW.
     """
-    raw_url = (payload.base_url or payload.target_url or "").strip()
+    raw_url = payload.base_url.strip()
     if not raw_url:
         raise HTTPException(status_code=400, detail="Please enter a backend URL (e.g. http://127.0.0.1:8001)")
-    make_default = payload.set_as_default if payload.set_as_default is not None else payload.make_default
 
     clean_url = raw_url.rstrip("/")
-    if not clean_url.startswith("http://") and not clean_url.startswith("https://"):
+    if not clean_url.startswith(("http://", "https://")):
         clean_url = f"http://{clean_url}"
-    if clean_url.endswith("/docs"):
-        clean_url = clean_url[:-5].rstrip("/")
-    elif clean_url.endswith("/openapi.json"):
-        clean_url = clean_url[:-13].rstrip("/")
+    for suffix in ("/docs", "/openapi.json"):
+        if clean_url.endswith(suffix):
+            clean_url = clean_url[: -len(suffix)].rstrip("/")
 
-    # If the user pasted a frontend URL (e.g. https://portfolio.sahilpatel.online) instead of its backend URL,
-    # check if /openapi.json is on a discovered backend URL (e.g. https://backend.sahilpatel.online)
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as probe_client:
             probe_resp = await probe_client.get(f"{clean_url}/openapi.json")
@@ -395,7 +442,6 @@ async def sync_swagger_from_url(
 
     derived_name, clean_slug = _derive_slug_and_name(clean_url, payload.name, payload.slug)
 
-    # 1. Create or update Upstream (match by base_url or slug so any port/domain gets its own clean entry)
     up = session.exec(
         select(Upstream).where((Upstream.base_url == clean_url) | (Upstream.slug == clean_slug))
     ).first()
@@ -405,26 +451,22 @@ async def sync_swagger_from_url(
             slug=clean_slug,
             base_url=clean_url,
             auth_mode="none",
-            enabled=make_default,
+            enabled=payload.make_default,
         )
-        session.add(up)
-        session.commit()
-        session.refresh(up)
     else:
         up.name = derived_name
         up.slug = clean_slug
         up.base_url = clean_url
-        session.add(up)
-        session.commit()
-        session.refresh(up)
+    session.add(up)
+    session.commit()
+    session.refresh(up)
 
-    if make_default:
+    if payload.make_default:
         for other in session.exec(select(Upstream)).all():
             other.enabled = (other.id == up.id)
             session.add(other)
         session.commit()
 
-    # 2. Try fetching /openapi.json from the target server
     imported_routes: List[Dict[str, Any]] = []
     openapi_reachable = False
     openapi_error = None
@@ -439,62 +481,7 @@ async def sync_swagger_from_url(
                 if title and not payload.name:
                     up.name = f"{title} ({clean_url})"
                     session.add(up)
-
-                paths_obj = spec.get("paths") or {}
-                for path_pattern, methods_map in paths_obj.items():
-                    if not isinstance(methods_map, dict):
-                        continue
-                    for method_key, op_spec in methods_map.items():
-                        m_upper = method_key.upper()
-                        if m_upper not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
-                            continue
-                        if not isinstance(op_spec, dict):
-                            op_spec = {}
-
-                        summary = op_spec.get("summary") or op_spec.get("description") or f"{m_upper} {path_pattern}"
-                        has_security = bool(op_spec.get("security"))
-                        path_lower = path_pattern.lower()
-                        tags_lower = str(op_spec.get("tags", "")).lower()
-                        is_admin = "admin" in path_lower or "admin" in tags_lower
-                        has_id_param = "{" in path_pattern
-                        is_sensitive = any(
-                            key in path_lower
-                            for key in ("checkout", "order", "coupon", "payment", "transfer", "login")
-                        )
-                        existing = session.exec(
-                            select(Route).where(
-                                Route.upstream_id == up.id,
-                                Route.method == m_upper,
-                                Route.path_pattern == path_pattern,
-                            )
-                        ).first()
-
-                        if existing:
-                            existing.registered = True
-                            existing.description = summary
-                            existing.auth_required = has_security
-                            existing.required_role = "admin" if is_admin else existing.required_role
-                            existing.bola_check_enabled = has_id_param
-                            existing.is_sensitive_flow = is_sensitive
-                            session.add(existing)
-                            imported_routes.append({"method": m_upper, "path_pattern": path_pattern, "action": "updated"})
-                        else:
-                            new_route = Route(
-                                upstream_id=up.id,
-                                method=m_upper,
-                                path_pattern=path_pattern,
-                                description=summary,
-                                auth_required=has_security,
-                                required_role="admin" if is_admin else None,
-                                rate_limit_rpm=20 if is_sensitive else 60,
-                                burst_capacity=5 if is_sensitive else 15,
-                                is_sensitive_flow=is_sensitive,
-                                bola_check_enabled=has_id_param,
-                                registered=True,
-                            )
-                            session.add(new_route)
-                            imported_routes.append({"method": m_upper, "path_pattern": path_pattern, "action": "created"})
-                session.commit()
+                imported_routes = _upsert_openapi_routes(session, up.id, spec)
             else:
                 openapi_error = f"Target returned HTTP {resp.status_code} on /openapi.json"
     except Exception as exc:
@@ -503,7 +490,6 @@ async def sync_swagger_from_url(
     return {
         "status": "connected",
         "base_url": up.base_url,
-        "imported_routes": len(imported_routes),
         "upstream": {
             "id": up.id,
             "name": up.name,

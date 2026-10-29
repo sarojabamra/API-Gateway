@@ -14,7 +14,12 @@ from app.models import BlocklistEntry, RequestLog, Route, Upstream
 from app.gateway.auth import get_upstream_jwt_config, validate_jwt_checklist, verify_api_key
 from app.gateway.ratelimit import rate_limiter
 from app.gateway.inspector import inspect_request_payload
-from app.gateway.policy_engine import check_bola_ownership, check_policy_mode, find_matching_route
+from app.gateway.policy_engine import (
+    check_bola_ownership,
+    check_policy_mode,
+    find_matching_route,
+    is_public_auth_path,
+)
 from app.gateway.responses import harden_response
 
 
@@ -24,7 +29,7 @@ def _build_synthesized_openapi_spec(
     gw_prefix: str,
 ) -> Dict[str, Any]:
     """
-    Synthesizes a complete OpenAPI 3.0.3 specification from the registered routes
+    Synthesizes an OpenAPI 3.0.3 specification from the registered routes
     in SentinelGW's database when a connected project does not natively serve /openapi.json.
     """
     proj_name = upstream.name if upstream else "Connected API Project"
@@ -37,7 +42,6 @@ def _build_synthesized_openapi_spec(
         if path_pat not in paths:
             paths[path_pat] = {}
 
-        # Extract {param} placeholders from path_pattern
         param_names = re.findall(r"\{([^}]+)\}", path_pat)
         parameters = [
             {
@@ -73,15 +77,11 @@ def _build_synthesized_openapi_spec(
             op_obj["security"] = [{"BearerAuth": []}, {"ApiKeyAuth": []}]
 
         if method_lower in ("post", "put", "patch"):
-            sample_body: Dict[str, Any] = {"name": "Sample Item"}
-            if "login" in path_pat.lower() or "register" in path_pat.lower() or "auth" in path_pat.lower():
-                sample_body = {"email": "alice@example.com", "password": "Password123!"}
-            elif "board" in path_pat.lower():
-                sample_body = {"title": "Project Roadmap", "background": "blue"}
-            elif "list" in path_pat.lower():
-                sample_body = {"title": "In Progress", "boardId": "board-101"}
-            elif "card" in path_pat.lower():
-                sample_body = {"title": "Implement API Security Gateway", "listId": "list-101", "description": "Task details"}
+            sample_body: Dict[str, Any] = (
+                {"email": "alice@example.com", "password": "Password123!"}
+                if is_public_auth_path(path_pat)
+                else {"name": "sample"}
+            )
             op_obj["requestBody"] = {
                 "required": False,
                 "content": {
@@ -358,10 +358,7 @@ async def execute_gateway_pipeline(
 
         # Look up matching route early so hit_count increments on EVERY call (even in Bypass mode or if blocked)
         matched_route, path_params = find_matching_route(session, upstream_id, method, norm_path)
-        is_shadow_probe = (
-            norm_path in ("/internal/debug", "/v1/users", "/admin/debug")
-            or request.headers.get("X-Simulator-Shadow") == "1"
-        )
+        is_shadow_probe = request.headers.get("X-Simulator-Shadow") == "1"
 
         if matched_route:
             route_id = matched_route.id
@@ -374,7 +371,6 @@ async def execute_gateway_pipeline(
                 select(Route).where(Route.upstream_id == upstream_id, Route.registered == True)
             ).all()
             if len(existing_proj_routes) == 0:
-                # If the connected project had no OpenAPI routes imported yet, auto-register normal endpoints as they are called
                 matched_route = Route(
                     upstream_id=upstream_id,
                     method=method,
@@ -390,9 +386,45 @@ async def execute_gateway_pipeline(
                 session.refresh(matched_route)
                 route_id = matched_route.id
 
-        # Pre-extract JWT claims if present so even early stages know user_sub
         auth_header = request.headers.get("Authorization", "")
         api_key_header = request.headers.get("X-API-Key", "")
+        req_headers_dict = dict(request.headers)
+
+        async def reject(
+            http_status: int,
+            dec: str,
+            reason: str,
+            owasp: str,
+            score: int,
+            pol_id: Optional[int] = None,
+            extra_headers: Optional[Dict[str, str]] = None,
+        ) -> Response:
+            return await _reject_request(
+                session=session,
+                t0=t0,
+                request_id=request_id,
+                client_ip=client_ip,
+                user_sub=user_sub,
+                user_role=user_role,
+                api_key_id=api_key_id,
+                upstream_id=upstream_id,
+                route_id=route_id,
+                method=method,
+                path=norm_path,
+                query_string=query_string,
+                req_headers=req_headers_dict,
+                body_text=body_text,
+                decoded_jwt=decoded_jwt,
+                http_status=http_status,
+                decision=dec,
+                block_reason=reason,
+                matched_policy_id=pol_id,
+                owasp_id=owasp,
+                threat_score=score,
+                user_agent=user_agent,
+                req_size=req_size,
+                extra_headers=extra_headers,
+            )
 
         # STAGE 2: Master Gateway Bypass Toggle (for live Attack Simulator ON/OFF comparison)
         proj_registered_routes = (
@@ -403,7 +435,7 @@ async def execute_gateway_pipeline(
 
         if not gateway_state.gateway_enabled:
             resp_status, resp_headers, resp_body = await _forward_to_upstream(
-                method, norm_path, query_string, dict(request.headers), raw_body_bytes, upstream, local_asgi_app, user_sub
+                method, norm_path, query_string, req_headers_dict, raw_body_bytes, upstream, local_asgi_app, user_sub
             )
             resp_body, resp_headers, media_type = _rewrite_swagger_if_needed(
                 norm_path, gw_prefix, resp_body, resp_headers, upstream, proj_registered_routes
@@ -425,7 +457,7 @@ async def execute_gateway_pipeline(
                 method=method,
                 path=norm_path,
                 query_params=query_string,
-                request_headers=_mask_sensitive_headers(dict(request.headers)),
+                request_headers=_mask_sensitive_headers(req_headers_dict),
                 request_body_preview=body_text[:1000],
                 response_body_preview=resp_body[:1000],
                 decoded_jwt=decoded_jwt,
@@ -445,35 +477,16 @@ async def execute_gateway_pipeline(
         # STAGE 3: IP, User & API Key Blocklist Check
         blocked_entry = _is_blocked(session, client_ip, user_sub, api_key_id)
         if blocked_entry:
-            return await _reject_request(
-                session=session,
-                t0=t0,
-                request_id=request_id,
-                client_ip=client_ip,
-                user_sub=user_sub,
-                user_role=user_role,
-                api_key_id=api_key_id,
-                upstream_id=upstream_id,
-                route_id=None,
-                method=method,
-                path=norm_path,
-                query_string=query_string,
-                req_headers=dict(request.headers),
-                body_text=body_text,
-                decoded_jwt=decoded_jwt,
-                http_status=403,
-                decision="blocked",
-                block_reason=f"Blocked by active blocklist ({blocked_entry.target_type}={blocked_entry.value}): {blocked_entry.reason}",
-                matched_policy_id=None,
-                owasp_id=blocked_entry.owasp_id or "API2",
-                threat_score=95,
-                user_agent=user_agent,
-                req_size=req_size,
+            return await reject(
+                403,
+                "blocked",
+                f"Blocked by active blocklist ({blocked_entry.target_type}={blocked_entry.value}): {blocked_entry.reason}",
+                blocked_entry.owasp_id or "API2",
+                95,
             )
 
         # STAGE 4: Route Registry Lookup & Shadow API Discovery (OWASP API9)
         if not matched_route and not is_swagger_doc_route:
-            # Record or increment undocumented Shadow API route (OWASP API9)
             shadow = session.exec(
                 select(Route).where(
                     Route.upstream_id == upstream_id,
@@ -506,30 +519,13 @@ async def execute_gateway_pipeline(
             threat_score = max(threat_score, 75)
             pol_enabled, pol_mode, pol_id = check_policy_mode(session, "shadow_api", "API9")
             if pol_enabled and pol_mode == "enforce":
-                return await _reject_request(
-                    session=session,
-                    t0=t0,
-                    request_id=request_id,
-                    client_ip=client_ip,
-                    user_sub=user_sub,
-                    user_role=user_role,
-                    api_key_id=api_key_id,
-                    upstream_id=upstream_id,
-                    route_id=route_id,
-                    method=method,
-                    path=norm_path,
-                    query_string=query_string,
-                    req_headers=dict(request.headers),
-                    body_text=body_text,
-                    decoded_jwt=decoded_jwt,
-                    http_status=403,
-                    decision="blocked",
-                    block_reason=f"Shadow API Protection (OWASP API9): Unregistered endpoint '{method} {norm_path}' is not in the API route inventory",
-                    matched_policy_id=pol_id,
-                    owasp_id="API9",
-                    threat_score=80,
-                    user_agent=user_agent,
-                    req_size=req_size,
+                return await reject(
+                    403,
+                    "blocked",
+                    f"Shadow API Protection (OWASP API9): Unregistered endpoint '{method} {norm_path}' is not in the API route inventory",
+                    "API9",
+                    80,
+                    pol_id,
                 )
             elif pol_enabled and pol_mode == "monitor":
                 decision = "monitored"
@@ -537,15 +533,12 @@ async def execute_gateway_pipeline(
                 matched_policy_id = pol_id
 
         # STAGE 5: Authentication — Strict JWT Checklist & API Key Validation (OWASP API2)
-        is_auth_bootstrap_route = (
-            norm_path in ("/auth/login", "/auth/register", "/login", "/register", "/token", "/health", "/api/health")
-            or norm_path.endswith(("/auth/login", "/auth/jwt/login", "/auth/register", "/oauth/token", "/api/health"))
+        is_auth_bootstrap_route = is_public_auth_path(norm_path)
+        auth_required = (
+            False
+            if (is_swagger_doc_route or is_auth_bootstrap_route)
+            else (matched_route.auth_required if matched_route else True)
         )
-        auth_required = matched_route.auth_required if matched_route else True
-        if is_swagger_doc_route or is_auth_bootstrap_route or norm_path in ("/products", "/search"):
-            auth_required = False if (is_swagger_doc_route or is_auth_bootstrap_route) else (
-                matched_route.auth_required if matched_route else False
-            )
 
         # Swagger UI's OAuth2 Password Flow modal sends `Authorization: Basic Og==` (empty client_id:client_secret)
         # when requesting a token from /auth/login. Do not treat Basic client-credential headers on login routes as Bearer JWTs.
@@ -561,31 +554,10 @@ async def execute_gateway_pipeline(
             if api_key_header and not auth_header:
                 ok_key, key_obj, key_msg = verify_api_key(api_key_header, session)
                 if not ok_key:
+                    api_key_id = key_obj.id if key_obj else None
                     if pol_enabled and pol_mode == "enforce":
-                        return await _reject_request(
-                            session=session,
-                            t0=t0,
-                            request_id=request_id,
-                            client_ip=client_ip,
-                            user_sub=None,
-                            user_role=None,
-                            api_key_id=key_obj.id if key_obj else None,
-                            upstream_id=upstream_id,
-                            route_id=route_id,
-                            method=method,
-                            path=norm_path,
-                            query_string=query_string,
-                            req_headers=dict(request.headers),
-                            body_text=body_text,
-                            decoded_jwt={},
-                            http_status=401,
-                            decision="blocked",
-                            block_reason=f"API Key Authentication Failed (OWASP API2): {key_msg}",
-                            matched_policy_id=pol_id,
-                            owasp_id="API2",
-                            threat_score=75,
-                            user_agent=user_agent,
-                            req_size=req_size,
+                        return await reject(
+                            401, "blocked", f"API Key Authentication Failed (OWASP API2): {key_msg}", "API2", 75, pol_id
                         )
                 else:
                     api_key_id = key_obj.id
@@ -594,30 +566,8 @@ async def execute_gateway_pipeline(
             elif auth_header or auth_required:
                 if not auth_header:
                     if pol_enabled and pol_mode == "enforce":
-                        return await _reject_request(
-                            session=session,
-                            t0=t0,
-                            request_id=request_id,
-                            client_ip=client_ip,
-                            user_sub=None,
-                            user_role=None,
-                            api_key_id=None,
-                            upstream_id=upstream_id,
-                            route_id=route_id,
-                            method=method,
-                            path=norm_path,
-                            query_string=query_string,
-                            req_headers=dict(request.headers),
-                            body_text=body_text,
-                            decoded_jwt={},
-                            http_status=401,
-                            decision="blocked",
-                            block_reason="Missing Bearer JWT or X-API-Key on protected route (OWASP API2)",
-                            matched_policy_id=pol_id,
-                            owasp_id="API2",
-                            threat_score=60,
-                            user_agent=user_agent,
-                            req_size=req_size,
+                        return await reject(
+                            401, "blocked", "Missing Bearer JWT or X-API-Key on protected route (OWASP API2)", "API2", 60, pol_id
                         )
                 else:
                     jwt_res = validate_jwt_checklist(
@@ -634,30 +584,13 @@ async def execute_gateway_pipeline(
                         fail_code = jwt_res.get("failure_code", "jwt_invalid")
                         score = 95 if fail_code in ("jwt_alg_none", "jwt_bad_signature", "jwt_algorithm_confusion") else 75
                         if pol_enabled and pol_mode == "enforce":
-                            return await _reject_request(
-                                session=session,
-                                t0=t0,
-                                request_id=request_id,
-                                client_ip=client_ip,
-                                user_sub=user_sub,
-                                user_role=user_role,
-                                api_key_id=None,
-                                upstream_id=upstream_id,
-                                route_id=route_id,
-                                method=method,
-                                path=norm_path,
-                                query_string=query_string,
-                                req_headers=dict(request.headers),
-                                body_text=body_text,
-                                decoded_jwt=decoded_jwt,
-                                http_status=401,
-                                decision="blocked",
-                                block_reason=f"JWT Validation Failed [{fail_code}] (OWASP API2): {jwt_res['reason']}",
-                                matched_policy_id=pol_id,
-                                owasp_id="API2",
-                                threat_score=score,
-                                user_agent=user_agent,
-                                req_size=req_size,
+                            return await reject(
+                                401,
+                                "blocked",
+                                f"JWT Validation Failed [{fail_code}] (OWASP API2): {jwt_res['reason']}",
+                                "API2",
+                                score,
+                                pol_id,
                             )
                         elif pol_enabled and pol_mode == "monitor":
                             decision = "monitored"
@@ -669,63 +602,28 @@ async def execute_gateway_pipeline(
         if user_sub or api_key_id:
             blocked_principal = _is_blocked(session, client_ip, user_sub, api_key_id)
             if blocked_principal:
-                return await _reject_request(
-                    session=session,
-                    t0=t0,
-                    request_id=request_id,
-                    client_ip=client_ip,
-                    user_sub=user_sub,
-                    user_role=user_role,
-                    api_key_id=api_key_id,
-                    upstream_id=upstream_id,
-                    route_id=route_id,
-                    method=method,
-                    path=norm_path,
-                    query_string=query_string,
-                    req_headers=dict(request.headers),
-                    body_text=body_text,
-                    decoded_jwt=decoded_jwt,
-                    http_status=403,
-                    decision="blocked",
-                    block_reason=f"Principal '{blocked_principal.value}' is on the active blocklist: {blocked_principal.reason}",
-                    matched_policy_id=None,
-                    owasp_id=blocked_principal.owasp_id or "API2",
-                    threat_score=95,
-                    user_agent=user_agent,
-                    req_size=req_size,
+                return await reject(
+                    403,
+                    "blocked",
+                    f"Principal '{blocked_principal.value}' is on the active blocklist: {blocked_principal.reason}",
+                    blocked_principal.owasp_id or "API2",
+                    95,
                 )
 
         # STAGE 6: Authorization — BFLA Role/Scope Check (OWASP API5) & BOLA Ownership Check (OWASP API1)
         if matched_route:
             # 6a. Broken Function Level Authorization (API5)
             req_role = matched_route.required_role
-            if req_role and req_role.lower() == "admin" and (user_role or "").lower() != "admin":
+            if req_role and (user_role or "").lower() not in (req_role.lower(), "admin"):
                 pol_enabled, pol_mode, pol_id = check_policy_mode(session, "bfla", "API5")
                 if pol_enabled and pol_mode == "enforce":
-                    return await _reject_request(
-                        session=session,
-                        t0=t0,
-                        request_id=request_id,
-                        client_ip=client_ip,
-                        user_sub=user_sub,
-                        user_role=user_role,
-                        api_key_id=api_key_id,
-                        upstream_id=upstream_id,
-                        route_id=route_id,
-                        method=method,
-                        path=norm_path,
-                        query_string=query_string,
-                        req_headers=dict(request.headers),
-                        body_text=body_text,
-                        decoded_jwt=decoded_jwt,
-                        http_status=403,
-                        decision="blocked",
-                        block_reason=f"BFLA Violation (OWASP API5): Route '{matched_route.path_pattern}' requires role='admin', caller has role='{user_role or 'anonymous'}'",
-                        matched_policy_id=pol_id,
-                        owasp_id="API5",
-                        threat_score=88,
-                        user_agent=user_agent,
-                        req_size=req_size,
+                    return await reject(
+                        403,
+                        "blocked",
+                        f"BFLA Violation (OWASP API5): Route '{matched_route.path_pattern}' requires role='{req_role}', caller has role='{user_role or 'anonymous'}'",
+                        "API5",
+                        88,
+                        pol_id,
                     )
                 elif pol_enabled and pol_mode == "monitor":
                     decision = "monitored"
@@ -739,31 +637,7 @@ async def execute_gateway_pipeline(
             if not bola_ok:
                 pol_enabled, pol_mode, pol_id = check_policy_mode(session, "bola", "API1")
                 if pol_enabled and pol_mode == "enforce":
-                    return await _reject_request(
-                        session=session,
-                        t0=t0,
-                        request_id=request_id,
-                        client_ip=client_ip,
-                        user_sub=user_sub,
-                        user_role=user_role,
-                        api_key_id=api_key_id,
-                        upstream_id=upstream_id,
-                        route_id=route_id,
-                        method=method,
-                        path=norm_path,
-                        query_string=query_string,
-                        req_headers=dict(request.headers),
-                        body_text=body_text,
-                        decoded_jwt=decoded_jwt,
-                        http_status=403,
-                        decision="blocked",
-                        block_reason=bola_err,
-                        matched_policy_id=pol_id,
-                        owasp_id="API1",
-                        threat_score=85,
-                        user_agent=user_agent,
-                        req_size=req_size,
-                    )
+                    return await reject(403, "blocked", bola_err or "BOLA Violation", "API1", 85, pol_id)
                 elif pol_enabled and pol_mode == "monitor":
                     decision = "monitored"
                     block_reason = f"[Monitor Mode] {bola_err}"
@@ -788,31 +662,14 @@ async def execute_gateway_pipeline(
             if not rl_allowed:
                 pol_enabled, pol_mode, pol_id = check_policy_mode(session, "rate_limit", rl_owasp)
                 if pol_enabled and pol_mode == "enforce":
-                    return await _reject_request(
-                        session=session,
-                        t0=t0,
-                        request_id=request_id,
-                        client_ip=client_ip,
-                        user_sub=user_sub,
-                        user_role=user_role,
-                        api_key_id=api_key_id,
-                        upstream_id=upstream_id,
-                        route_id=route_id,
-                        method=method,
-                        path=norm_path,
-                        query_string=query_string,
-                        req_headers=dict(request.headers),
-                        body_text=body_text,
-                        decoded_jwt=decoded_jwt,
-                        http_status=429,
-                        decision="rate_limited",
-                        block_reason=f"Rate/Velocity Limit Exceeded (OWASP {rl_owasp}): {rl_meta['reason']}",
-                        matched_policy_id=pol_id,
-                        owasp_id=rl_owasp,
-                        threat_score=70,
-                        user_agent=user_agent,
-                        req_size=req_size,
-                        extra_headers=rate_headers,
+                    return await reject(
+                        429,
+                        "rate_limited",
+                        f"Rate/Velocity Limit Exceeded (OWASP {rl_owasp}): {rl_meta['reason']}",
+                        rl_owasp,
+                        70,
+                        pol_id,
+                        rate_headers,
                     )
                 elif pol_enabled and pol_mode == "monitor":
                     decision = "monitored"
@@ -826,10 +683,8 @@ async def execute_gateway_pipeline(
             {"violation": False, "threat_score": 0}
             if is_swagger_doc_route
             else inspect_request_payload(
-                method=method,
                 path=norm_path,
                 query_string=query_string,
-                headers=dict(request.headers),
                 body_text=body_text,
             )
         )
@@ -838,31 +693,14 @@ async def execute_gateway_pipeline(
             insp_type = inspection["policy_type"]
             pol_enabled, pol_mode, pol_id = check_policy_mode(session, insp_type, insp_owasp)
             if pol_enabled and pol_mode == "enforce":
-                return await _reject_request(
-                    session=session,
-                    t0=t0,
-                    request_id=request_id,
-                    client_ip=client_ip,
-                    user_sub=user_sub,
-                    user_role=user_role,
-                    api_key_id=api_key_id,
-                    upstream_id=upstream_id,
-                    route_id=route_id,
-                    method=method,
-                    path=norm_path,
-                    query_string=query_string,
-                    req_headers=dict(request.headers),
-                    body_text=body_text,
-                    decoded_jwt=decoded_jwt,
-                    http_status=inspection.get("http_status", 403),
-                    decision="blocked",
-                    block_reason=inspection["reason"],
-                    matched_policy_id=pol_id,
-                    owasp_id=insp_owasp,
-                    threat_score=inspection.get("threat_score", 85),
-                    user_agent=user_agent,
-                    req_size=req_size,
-                    extra_headers=rate_headers,
+                return await reject(
+                    inspection.get("http_status", 403),
+                    "blocked",
+                    inspection["reason"],
+                    insp_owasp,
+                    inspection.get("threat_score", 85),
+                    pol_id,
+                    rate_headers,
                 )
             elif pol_enabled and pol_mode == "monitor":
                 decision = "monitored"
@@ -873,7 +711,7 @@ async def execute_gateway_pipeline(
 
         # STAGE 9: Forward to Upstream via Async HTTPX
         resp_status, upstream_headers, raw_resp_body = await _forward_to_upstream(
-            method, norm_path, query_string, dict(request.headers), raw_body_bytes, upstream, local_asgi_app, user_sub
+            method, norm_path, query_string, req_headers_dict, raw_body_bytes, upstream, local_asgi_app, user_sub
         )
 
         # STAGE 10: Response Hardening (API8 Headers & Error Sanitization + API3 JSON Field Redaction)

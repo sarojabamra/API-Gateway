@@ -95,7 +95,6 @@ class RouteCreateRequest(BaseModel):
 class OpenAPIImportRequest(BaseModel):
     upstream_id: int = 1
     spec_content: Optional[str] = None
-    content: Optional[str] = None
 
 
 class RateLimitBurstTestRequest(BaseModel):
@@ -109,4 +108,3 @@ class RateLimitBurstTestRequest(BaseModel):
 class SimulatorRunRequest(BaseModel):
     scenario_id: str  # bola_enum, brute_force, jwt_tamper, data_exposure, rate_flood, bfla_admin, ssrf_metadata, sqli_shadow, all
     upstream_id: int = 1
-    target_mode: Optional[str] = None

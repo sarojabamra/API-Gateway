@@ -1,35 +1,17 @@
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple
-from app.config import settings
-
-try:
-    import redis
-except ImportError:
-    redis = None
+from typing import Any, Dict, List, Tuple
 
 
 class HybridRateLimiter:
     """
-    Production-grade Rate Limiter implementing both:
+    Rate Limiter implementing both:
     1. Sliding Window Counter (sustained request rate per 60s window)
     2. Token Bucket (short-term burst capacity)
-    Automatically uses Redis if REDIS_URL is reachable, falling back transparently to thread-safe in-memory storage.
     """
 
     def __init__(self):
         self.backend_type = "in-memory"
-        self._redis = None
-        if settings.REDIS_URL and redis is not None:
-            try:
-                client = redis.from_url(settings.REDIS_URL, decode_responses=True, socket_connect_timeout=1)
-                client.ping()
-                self._redis = client
-                self.backend_type = "redis"
-            except Exception:
-                self._redis = None
-                self.backend_type = "in-memory"
-
         # In-memory sliding window: key -> {window_id: count}
         self._windows: Dict[str, Dict[int, int]] = {}
         # In-memory token buckets: key -> {"tokens": float, "last_ts": float}

@@ -85,47 +85,6 @@ def get_me(user: User = Depends(get_current_user)):
     )
 
 
-@router.get("/settings")
-def get_auth_center_settings(session: Session = Depends(get_session)):
-    keys = session.exec(select(ApiKey).order_by(ApiKey.created_at.desc())).all()
-    tokens = session.exec(select(RevokedToken).order_by(RevokedToken.revoked_at.desc())).all()
-    return {
-        "jwt_config": {
-            "allowed_algorithms": jwt_runtime_config.allowed_algorithms,
-            "expected_issuer": jwt_runtime_config.issuer,
-            "expected_audience": jwt_runtime_config.audience,
-            "clock_skew_leeway_seconds": jwt_runtime_config.leeway_seconds,
-            "require_jti": jwt_runtime_config.require_jti,
-            "reject_alg_none": jwt_runtime_config.reject_alg_none,
-        },
-        "api_keys": [
-            {
-                "id": k.id,
-                "name": k.name,
-                "key_prefix": k.key_prefix,
-                "owner_email": k.owner_email,
-                "role": k.role,
-                "scopes": json.loads(k.scopes_json or "[]"),
-                "rate_limit_tier": k.rate_limit_tier,
-                "created_at": to_ist_iso(k.created_at),
-                "revoked": k.revoked,
-            }
-            for k in keys
-        ],
-        "revoked_tokens": [
-            {
-                "id": t.id,
-                "jti": t.jti,
-                "user_sub": t.user_sub,
-                "reason": t.reason,
-                "revoked_by": t.revoked_by,
-                "revoked_at": to_ist_iso(t.revoked_at),
-            }
-            for t in tokens
-        ],
-    }
-
-
 @router.get("/jwt-config")
 def get_jwt_config():
     return {
@@ -231,24 +190,12 @@ class JwtTestUnifiedInput(BaseModel):
 @router.post("/jwt-test")
 def test_or_mint_jwt(payload: JwtTestUnifiedInput, session: Session = Depends(get_session)):
     if payload.preset:
-        preset_map = {
-            "valid_customer": ("valid", "user-101", "customer"),
-            "valid_admin": ("valid", "admin-1", "admin"),
-            "alg_none": ("alg_none", "admin-1", "admin"),
-            "expired": ("expired", "user-101", "customer"),
-            "wrong_issuer": ("wrong_aud", "user-101", "customer"),
-            "bad_signature": ("bad_sig", "admin-1", "admin"),
-            "revoked_jti": ("revoked_jti", "user-102", "customer"),
+        preset_aliases = {
+            "valid_customer": "valid_user",
+            "bad_signature": "tampered_sig",
         }
-        mapped_preset, sub, role = preset_map.get(payload.preset, ("valid", "user-101", "customer"))
-        minted = mint_demo_jwt(
-            sub=sub,
-            email=f"{sub}@vulnshop.demo",
-            role=role,
-            scopes=["read:orders", "write:orders"],
-            preset=mapped_preset,
-            session=session,
-        )
+        mapped_preset = preset_aliases.get(payload.preset, payload.preset)
+        minted = mint_demo_jwt(preset=mapped_preset, session=session)
         token_str = minted["token"]
     else:
         token_str = payload.token or ""
@@ -259,16 +206,11 @@ def test_or_mint_jwt(payload: JwtTestUnifiedInput, session: Session = Depends(ge
         expected_role=payload.expected_role,
         expected_scope=payload.expected_scope,
     )
-    checklist_dict = {}
-    for st in res.get("steps", []):
-        key = f"step{st.get('step')}_{st.get('name', '').lower().replace(' ', '_').replace('&', '')}"
-        checklist_dict[key] = "passed" if st.get("passed") else f"failed: {st.get('detail')}"
     return {
         **res,
         "token": token_str,
         "failed_step": res.get("failure_code"),
         "error": res.get("reason"),
-        "checklist": checklist_dict,
     }
 
 
@@ -372,7 +314,6 @@ def create_api_key(
         "id": key_obj.id,
         "name": key_obj.name,
         "raw_key": raw_secret,
-        "plaintext_key": raw_secret,
         "key_prefix": key_obj.key_prefix,
         "owner_email": key_obj.owner_email,
         "role": key_obj.role,
@@ -383,7 +324,6 @@ def create_api_key(
     }
 
 
-@router.delete("/api-keys/{key_id}")
 @router.post("/api-keys/{key_id}/revoke")
 def revoke_api_key(
     key_id: int,
@@ -405,7 +345,6 @@ class RevokeJtiInput(BaseModel):
     reason: str = "Manual token revocation via Auth Center"
 
 
-@router.post("/revoke-jti")
 @router.post("/revoked-tokens")
 def revoke_jti_token(
     payload: RevokeJtiInput,

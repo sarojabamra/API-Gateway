@@ -10,9 +10,12 @@ import {
   ExternalLink,
   RefreshCw,
   Play,
-  Activity,
   FolderKanban,
   Layers,
+  Globe,
+  Activity,
+  Edit3,
+  Check,
 } from 'lucide-react';
 import { apiFetch, formatTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
@@ -51,7 +54,15 @@ export const InventoryPage: React.FC = () => {
   // Connect API input
   const [swaggerUrlInput, setSwaggerUrlInput] = useState('');
   const [projectNameInput, setProjectNameInput] = useState('');
+  const [projectSlugInput, setProjectSlugInput] = useState('');
   const [syncingSwagger, setSyncingSwagger] = useState(false);
+
+  // Inline banner editing for slug and project details
+  const [inlineEditing, setInlineEditing] = useState(false);
+  const [inlineName, setInlineName] = useState('');
+  const [inlineSlug, setInlineSlug] = useState('');
+  const [inlineBaseUrl, setInlineBaseUrl] = useState('');
+  const [savingInline, setSavingInline] = useState(false);
 
   // Add Route state
   const [newMethod, setNewMethod] = useState('GET');
@@ -204,11 +215,12 @@ export const InventoryPage: React.FC = () => {
         body: JSON.stringify({
           base_url: swaggerUrlInput.trim(),
           name: projectNameInput.trim() || undefined,
+          slug: projectSlugInput.trim() || undefined,
           make_default: true,
         }),
       });
       const connectedUrl = res.upstream?.base_url || res.base_url || swaggerUrlInput.trim();
-      const importedCount = res.imported_count ?? res.imported_routes ?? 0;
+      const importedCount = res.imported_count ?? 0;
       if (res.upstream?.id) {
         setSelectedProject(res.upstream.id, res.upstream.name, res.upstream.slug);
       }
@@ -219,12 +231,74 @@ export const InventoryPage: React.FC = () => {
       });
       setSwaggerUrlInput('');
       setProjectNameInput('');
+      setProjectSlugInput('');
       setTab('routes');
       await fetchInventory();
     } catch (err: any) {
       addToast({ title: 'Connection Failed', message: err.message, severity: 'high' });
     } finally {
       setSyncingSwagger(false);
+    }
+  };
+
+  // Sync banner state with currentProject
+  useEffect(() => {
+    if (currentProject && !inlineEditing) {
+      setInlineName(currentProject.name || '');
+      setInlineSlug(currentProject.slug || '');
+      setInlineBaseUrl(currentProject.base_url || '');
+    }
+  }, [currentProject?.id, currentProject?.slug, currentProject?.name, currentProject?.base_url, inlineEditing]);
+
+  const handleQuickSaveSlug = async () => {
+    if (!currentProject || !inlineSlug.trim()) return;
+    setSavingInline(true);
+    try {
+      const cleanSlug = inlineSlug.trim().toLowerCase().replace(/\s+/g, '-');
+      const updated = await apiFetch(`/inventory/upstreams/${currentProject.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ slug: cleanSlug }),
+      });
+      setSelectedProject(updated.id, updated.name, updated.slug);
+      addToast({
+        title: 'Project Slug Updated',
+        message: `Project can now be reached at /gw/${updated.slug}/*`,
+        severity: 'info',
+      });
+      await fetchInventory();
+    } catch (err: any) {
+      addToast({ title: 'Slug Update Failed', message: err.message, severity: 'high' });
+    } finally {
+      setSavingInline(false);
+    }
+  };
+
+  const handleSaveInlineProject = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!currentProject) return;
+    setSavingInline(true);
+    try {
+      const cleanSlug = inlineSlug.trim().toLowerCase().replace(/\s+/g, '-');
+      const updated = await apiFetch(`/inventory/upstreams/${currentProject.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          name: inlineName.trim(),
+          slug: cleanSlug,
+          base_url: inlineBaseUrl.trim(),
+        }),
+      });
+      setSelectedProject(updated.id, updated.name, updated.slug);
+      addToast({
+        title: 'Project Updated',
+        message: `Successfully updated ${updated.name}`,
+        severity: 'info',
+      });
+      setInlineEditing(false);
+      await fetchInventory();
+    } catch (err: any) {
+      addToast({ title: 'Update Failed', message: err.message, severity: 'high' });
+    } finally {
+      setSavingInline(false);
     }
   };
 
@@ -235,13 +309,12 @@ export const InventoryPage: React.FC = () => {
         method: 'POST',
         body: JSON.stringify({
           spec_content: specContent,
-          content: specContent,
           upstream_id: currentProjectId,
         }),
       });
       addToast({
         title: `OpenAPI Imported into ${currentProject?.name}`,
-        message: `Imported ${res.imported_count ?? res.created_count ?? 0} routes into ${currentProject?.name}`,
+        message: `Imported ${res.imported_count ?? 0} routes into ${currentProject?.name}`,
         severity: 'info',
       });
       setTab('routes');
@@ -315,7 +388,14 @@ export const InventoryPage: React.FC = () => {
             value={projectNameInput}
             onChange={(e) => setProjectNameInput(e.target.value)}
             placeholder="Project name (optional)"
-            className="w-64 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white"
+            className="w-48 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white"
+          />
+          <input
+            type="text"
+            value={projectSlugInput}
+            onChange={(e) => setProjectSlugInput(e.target.value)}
+            placeholder="Slug e.g. my-api (optional)"
+            className="w-48 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white font-mono"
           />
           <input
             type="text"
@@ -323,7 +403,7 @@ export const InventoryPage: React.FC = () => {
             value={swaggerUrlInput}
             onChange={(e) => setSwaggerUrlInput(e.target.value)}
             placeholder="Backend URL (e.g. http://127.0.0.1:8001)"
-            className="flex-1 min-w-[260px] bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white font-mono"
+            className="flex-1 min-w-[240px] bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white font-mono"
           />
           <button
             type="submit"
@@ -336,16 +416,19 @@ export const InventoryPage: React.FC = () => {
         </form>
       </div>
 
-      {/* PROJECT TABS BAR */}
+      {/* PROJECT TABS / GRID */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
             <FolderKanban className="w-4 h-4 text-cyan-400" />
             <span>Projects ({upstreams.length})</span>
           </div>
+          <span className="text-[11px] text-slate-500 hidden sm:inline">
+            Click any project card to inspect and manage its routes
+          </span>
         </div>
 
-        <div className="flex flex-wrap gap-2.5 border-b border-slate-800 pb-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pb-1 items-stretch">
           {upstreams.map((u: any) => {
             const isSelected = u.id === currentProjectId;
             const countForProj = (data?.registered_routes || []).filter(
@@ -360,37 +443,78 @@ export const InventoryPage: React.FC = () => {
               <div
                 key={u.id}
                 onClick={() => setSelectedProject(u.id, u.name, u.slug)}
-                className={`group cursor-pointer rounded-xl px-4 py-3 border transition flex items-center gap-3 ${
+                className={`group cursor-pointer rounded-xl p-4 border transition-all duration-150 flex flex-col justify-between gap-3 text-left relative h-full ${
                   isSelected
-                    ? 'bg-cyan-500/15 border-cyan-400 text-white shadow-lg shadow-cyan-950/50'
-                    : 'bg-slate-900/80 border-slate-800 text-slate-300 hover:bg-slate-900 hover:border-slate-700'
+                    ? 'bg-slate-900/95 border-cyan-400 text-white shadow-lg shadow-cyan-950/50 ring-1 ring-cyan-500/40'
+                    : 'bg-slate-900/70 border-slate-800 text-slate-300 hover:bg-slate-900 hover:border-slate-700 hover:shadow-md'
                 }`}
               >
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-bold">{u.name}</span>
+                <div className="space-y-2.5 flex-1 flex flex-col">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <Server
+                        className={`w-4 h-4 shrink-0 ${
+                          isSelected ? 'text-cyan-400' : 'text-slate-500 group-hover:text-slate-400'
+                        }`}
+                      />
+                      <span className="text-sm font-bold truncate text-white" title={u.name}>
+                        {u.name}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {isSelected ? (
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                          <CheckCircle2 className="w-3 h-3 text-cyan-400" />
+                          Selected
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono text-slate-500 group-hover:text-cyan-400 transition">
+                          Select
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 min-h-[22px] overflow-hidden">
                     {isDemo ? (
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                      <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
                         BUILT-IN DEMO
                       </span>
                     ) : (
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
                         YOUR PROJECT
                       </span>
                     )}
                     {u.enabled && (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      <span className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
                         ACTIVE /gw/*
                       </span>
                     )}
+                    <span className="truncate px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-cyan-300 border border-slate-700/60" title={`Route Slug: /gw/${u.slug}/*`}>
+                      /gw/{u.slug}/*
+                    </span>
                   </div>
 
-                  <div className="flex items-center gap-3 mt-1 text-[11px] font-mono text-slate-400">
-                    <span>{u.base_url}</span>
-                    <span>•</span>
-                    <span className="text-slate-200">{countForProj} routes</span>
-                    <span>•</span>
-                    <span className="text-cyan-300 font-bold">{totalHitsForProj} requests</span>
+                  <div className="bg-slate-950/70 border border-slate-800/80 rounded-lg px-2.5 py-1.5 flex items-center gap-2 text-xs font-mono text-slate-300 mt-auto">
+                    <Globe className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                    <span className="truncate text-[11px] flex-1" title={u.base_url}>
+                      {u.base_url}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-xs pt-2.5 border-t border-slate-800/80 font-mono shrink-0">
+                  <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
+                    <Layers className="w-3.5 h-3.5 text-slate-500" />
+                    <span>
+                      <strong className="text-slate-200 font-semibold">{countForProj}</strong> routes
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
+                    <Activity className="w-3.5 h-3.5 text-slate-500" />
+                    <span>
+                      <strong className="text-cyan-300 font-semibold">{totalHitsForProj}</strong> requests
+                    </span>
                   </div>
                 </div>
               </div>
@@ -401,62 +525,179 @@ export const InventoryPage: React.FC = () => {
 
       {/* Selected Project Header Banner */}
       {currentProject && (
-        <div className="p-4 rounded-xl bg-slate-900/95 border border-cyan-500/30 flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
-              <Layers className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-base font-bold text-white">{currentProject.name}</h3>
-                {currentProject.enabled ? (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                    DEFAULT GATEWAY TARGET (/gw/*)
-                  </span>
-                ) : (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300">
-                    SLUG ROUTE (/gw/{currentProject.slug}/*)
-                  </span>
-                )}
+        <div className="p-4 rounded-xl bg-slate-900/95 border border-cyan-500/30 space-y-3.5">
+          {/* Top Row: Project Info & Primary Actions */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div className="flex items-center gap-3 min-w-0 flex-1">
+              <div className="p-2.5 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-400 shrink-0">
+                <Layers className="w-5 h-5" />
               </div>
-              <p className="text-xs text-slate-400 mt-0.5 font-mono">
-                Backend Server: <span className="text-slate-200">{currentProject.base_url}</span> ·{' '}
-                <span className="text-cyan-300 font-bold">{projectRoutes.length}</span> routes
-              </p>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-base font-bold text-white truncate max-w-sm" title={currentProject.name}>
+                    {currentProject.name}
+                  </h3>
+                  {currentProject.enabled ? (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                      DEFAULT GATEWAY TARGET (/gw/*)
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 shrink-0">
+                      SLUG ROUTE (/gw/{currentProject.slug}/*)
+                    </span>
+                  )}
+                </div>
+                <div className="text-xs text-slate-400 mt-1 font-mono flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="text-slate-500">Backend Server:</span>
+                  <span className="text-slate-200 truncate max-w-md" title={currentProject.base_url}>
+                    {currentProject.base_url}
+                  </span>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-cyan-300 font-bold">{projectRoutes.length} routes</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center flex-wrap gap-2 shrink-0">
+              {!currentProject.enabled && (
+                <button
+                  onClick={() => handleActivateUpstream(currentProject.id, currentProject.name)}
+                  className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition shrink-0"
+                >
+                  Set as Default Active Target (/gw/*)
+                </button>
+              )}
+              <a
+                href={
+                  currentProject.enabled
+                    ? '/gw/docs'
+                    : `/gw/${currentProject.slug}/docs`
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition shrink-0"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Swagger Docs</span>
+              </a>
+              {currentProject.id !== 1 && (
+                <button
+                  onClick={() => handleDeleteUpstream(currentProject.id)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-medium shrink-0 transition"
+                  title="Delete this API project"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete</span>
+                </button>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {!currentProject.enabled && (
-              <button
-                onClick={() => handleActivateUpstream(currentProject.id, currentProject.name)}
-                className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition"
-              >
-                Set as Default Active Target (/gw/*)
-              </button>
-            )}
-            <a
-              href={
-                currentProject.enabled
-                  ? 'http://127.0.0.1:8000/gw/docs'
-                  : `http://127.0.0.1:8000/gw/${currentProject.slug}/docs`
-              }
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              Open Protected Swagger UI for {currentProject.name}
-            </a>
-            {currentProject.id !== 1 && (
-              <button
-                onClick={() => handleDeleteUpstream(currentProject.id)}
-                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-medium"
-                title="Delete this API project"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Delete Project
-              </button>
+          {/* Bottom Area: Editable Slug & Project Settings */}
+          <div className="pt-3 border-t border-slate-800/80">
+            {inlineEditing ? (
+              <form onSubmit={handleSaveInlineProject} className="space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-medium">Project Title</label>
+                    <input
+                      type="text"
+                      required
+                      value={inlineName}
+                      onChange={(e) => setInlineName(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-400 rounded-lg px-3 py-1.5 text-white text-xs focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-medium">
+                      Route Slug <span className="text-cyan-400 font-mono text-[11px]">(/gw/{inlineSlug || 'slug'}/*)</span>
+                    </label>
+                    <div className="flex items-center bg-slate-950 border border-cyan-500/50 rounded-lg px-2.5 py-1 focus-within:ring-1 focus-within:ring-cyan-400">
+                      <span className="text-slate-500 font-mono text-xs">/gw/</span>
+                      <input
+                        type="text"
+                        required
+                        value={inlineSlug}
+                        onChange={(e) => setInlineSlug(e.target.value.toLowerCase().replace(/\s+/g, '-'))}
+                        className="flex-1 bg-transparent text-cyan-300 font-mono text-xs focus:outline-none px-1"
+                      />
+                      <span className="text-slate-500 font-mono text-xs">/*</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1 font-medium">Backend Server URL</label>
+                    <input
+                      type="text"
+                      required
+                      value={inlineBaseUrl}
+                      onChange={(e) => setInlineBaseUrl(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-700 focus:border-cyan-400 rounded-lg px-3 py-1.5 text-white font-mono text-xs focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInlineName(currentProject.name || '');
+                      setInlineSlug(currentProject.slug || '');
+                      setInlineBaseUrl(currentProject.base_url || '');
+                      setInlineEditing(false);
+                    }}
+                    className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition font-medium"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingInline}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    {savingInline ? 'Saving...' : 'Save Changes'}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex flex-wrap items-center gap-2 font-mono">
+                  <span className="text-slate-400 font-sans font-medium">Project Route Slug:</span>
+                  <div className="inline-flex items-center gap-1 bg-slate-950 border border-slate-700 hover:border-cyan-500/50 rounded-lg px-2.5 py-1 text-xs font-mono transition">
+                    <span className="text-slate-500">/gw/</span>
+                    <input
+                      type="text"
+                      value={inlineSlug}
+                      onChange={(e) => setInlineSlug(e.target.value.toLowerCase().replace(/\s+/g, '-'))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleQuickSaveSlug();
+                      }}
+                      placeholder="slug"
+                      title="Edit project slug"
+                      className="bg-slate-900 border border-slate-700 focus:border-cyan-400 text-cyan-300 font-bold focus:outline-none rounded px-2 py-0.5 min-w-[90px] max-w-[180px] text-xs font-mono"
+                    />
+                    <span className="text-slate-500">/*</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleQuickSaveSlug}
+                    disabled={savingInline || inlineSlug === currentProject.slug || !inlineSlug.trim()}
+                    className="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/30 font-sans font-semibold text-xs transition disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    {savingInline ? 'Saving...' : 'Save Slug'}
+                  </button>
+                </div>
+
+                {canMutate(['admin', 'developer']) && (
+                  <button
+                    type="button"
+                    onClick={() => setInlineEditing(true)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium transition"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Edit Title & Backend URL</span>
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>

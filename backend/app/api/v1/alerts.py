@@ -9,6 +9,7 @@ from app.models import Alert, BlocklistEntry, ClientBaseline, Policy, RequestLog
 from app.schemas import AlertActionRequest, AlertBulkActionRequest
 from app.api.v1.deps import require_roles
 from app.detection.ai_triage import generate_ai_triage_summary
+from app.detection.engine import get_alert_upstream_id
 
 router = APIRouter(prefix="/alerts", tags=["Alerts & Incident Response"])
 
@@ -26,11 +27,7 @@ def list_alerts(
     items = []
     project_alerts = []
     for a in alerts:
-        try:
-            evidence = json.loads(a.evidence_json or "{}")
-            alert_upstream_id = int(evidence.get("upstream_id", 1))
-        except Exception:
-            alert_upstream_id = 1
+        alert_upstream_id = get_alert_upstream_id(a)
         if alert_upstream_id != upstream_id:
             continue
         project_alerts.append(a)
@@ -100,10 +97,9 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
         raise HTTPException(status_code=404, detail="Alert not found")
     try:
         alert_evidence = json.loads(alert.evidence_json or "{}")
-        alert_upstream_id = int(alert_evidence.get("upstream_id", 1))
     except Exception:
         alert_evidence = {}
-        alert_upstream_id = 1
+    alert_upstream_id = get_alert_upstream_id(alert)
 
     req_ids: List[str] = json.loads(alert.related_request_ids_json or "[]")
     related_logs = []
@@ -119,7 +115,6 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
         ).all()
         related_logs = list(logs[:15])
 
-    # Offender profile telemetry
     all_ip_logs = session.exec(
         select(RequestLog).where(
             RequestLog.client_ip == alert.client_ip,
@@ -163,19 +158,12 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
         "client_ip": alert.client_ip,
         "user_sub": alert.user_sub,
         "total_requests": len(all_ip_logs),
-        "total_requests_24h": len(all_ip_logs),
         "blocked_requests": sum(1 for r in all_ip_logs if r.decision in ("blocked", "rate_limited")),
-        "blocked_requests_24h": sum(1 for r in all_ip_logs if r.decision in ("blocked", "rate_limited")),
         "is_ip_blocked": blocked_ip_entry is not None,
-        "is_currently_blocked": blocked_ip_entry is not None,
         "anomaly_zscore": baseline.last_zscore if baseline else 0.0,
         "mean_rpm": baseline.mean_rpm if baseline else 5.0,
-        "baseline": {
-            "last_zscore": baseline.last_zscore if baseline else 0.0,
-            "mean_rpm": baseline.mean_rpm if baseline else 5.0,
-        },
     }
-    alert_dict = {
+    return {
         "id": alert.id,
         "ts": to_ist_iso(alert.ts),
         "updated_at": to_ist_iso(alert.updated_at),
@@ -194,14 +182,8 @@ def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
         "evidence": alert_evidence,
         "upstream_id": alert_upstream_id,
         "ai_summary": ai_parsed,
-        "ai_triage": ai_parsed,
-    }
-    return {
-        **alert_dict,
-        "alert": alert_dict,
         "offender_profile": offender_prof,
         "timeline": timeline_items,
-        "correlated_requests": timeline_items,
     }
 
 
@@ -355,7 +337,6 @@ async def execute_alert_action(
     return get_alert_detail(alert_id, session)
 
 
-@router.post("/{alert_id}/triage")
 @router.post("/{alert_id}/ai-triage")
 async def generate_alert_ai_triage_endpoint(
     alert_id: int,

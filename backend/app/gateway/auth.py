@@ -165,6 +165,29 @@ def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 
 
+def _fail_step(
+    steps: List[Dict[str, Any]],
+    step_num: int,
+    name: str,
+    detail: str,
+    failure_code: str,
+    reason: str,
+    owasp_id: str = "API2",
+    header: Optional[Dict[str, Any]] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    steps.append({"step": step_num, "name": name, "passed": False, "detail": detail})
+    return {
+        "valid": False,
+        "failure_code": failure_code,
+        "reason": reason,
+        "owasp_id": owasp_id,
+        "header": header or {},
+        "payload": payload or {},
+        "steps": steps,
+    }
+
+
 def validate_jwt_checklist(
     token: str,
     session: Session,
@@ -193,21 +216,11 @@ def validate_jwt_checklist(
 
     parts = raw.split(".")
     if len(parts) != 3:
-        steps.append({
-            "step": 1,
-            "name": "Token Structure & Header Parse",
-            "passed": False,
-            "detail": f"Malformed JWT: expected 3 dot-separated segments, got {len(parts)}",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_malformed",
-            "reason": "Malformed JWT structure",
-            "owasp_id": "API2",
-            "header": {},
-            "payload": {},
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 1, "Token Structure & Header Parse",
+            f"Malformed JWT: expected 3 dot-separated segments, got {len(parts)}",
+            "jwt_malformed", "Malformed JWT structure",
+        )
 
     try:
         header = json.loads(_b64url_decode(parts[0]).decode("utf-8"))
@@ -219,21 +232,11 @@ def validate_jwt_checklist(
             "detail": f"Parsed JWT header (alg={header.get('alg')}, kid={header.get('kid', 'default')})",
         })
     except Exception as exc:
-        steps.append({
-            "step": 1,
-            "name": "Token Structure & Header Parse",
-            "passed": False,
-            "detail": f"Failed to base64url decode header/payload: {exc}",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_decode_error",
-            "reason": "Invalid base64/JSON in JWT segments",
-            "owasp_id": "API2",
-            "header": {},
-            "payload": {},
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 1, "Token Structure & Header Parse",
+            f"Failed to base64url decode header/payload: {exc}",
+            "jwt_decode_error", "Invalid base64/JSON in JWT segments",
+        )
 
     # Step 2: Pin allowed algorithms & reject alg=none / algorithm confusion
     alg = str(header.get("alg", "")).strip()
@@ -241,43 +244,24 @@ def validate_jwt_checklist(
     is_firebase_token = isinstance(iss_claim, str) and iss_claim.startswith("https://securetoken.google.com/")
 
     if alg.lower() == "none" or not parts[2]:
-        steps.append({
-            "step": 2,
-            "name": "Algorithm Pinning & alg=none Defense",
-            "passed": False,
-            "detail": f"CRITICAL: Token uses unauthenticated 'alg={alg}' or empty signature segment",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_alg_none",
-            "reason": "Rejected alg=none unsigned JWT attack",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 2, "Algorithm Pinning & alg=none Defense",
+            f"CRITICAL: Token uses unauthenticated 'alg={alg}' or empty signature segment",
+            "jwt_alg_none", "Rejected alg=none unsigned JWT attack",
+            header=header, payload=payload,
+        )
 
-    # If testing a Firebase RS256 token and no explicit RS256 project config was saved yet, allow RS256 for Firebase
     effective_allowed_algorithms = list(allowed_algorithms)
     if is_firebase_token and "RS256" not in effective_allowed_algorithms:
         effective_allowed_algorithms.append("RS256")
 
     if alg not in effective_allowed_algorithms:
-        steps.append({
-            "step": 2,
-            "name": "Algorithm Pinning & alg=none Defense",
-            "passed": False,
-            "detail": f"Algorithm '{alg}' is not in pinned allowlist {effective_allowed_algorithms}",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_algorithm_confusion",
-            "reason": f"Disallowed JWT algorithm '{alg}'",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 2, "Algorithm Pinning & alg=none Defense",
+            f"Algorithm '{alg}' is not in pinned allowlist {effective_allowed_algorithms}",
+            "jwt_algorithm_confusion", f"Disallowed JWT algorithm '{alg}'",
+            header=header, payload=payload,
+        )
 
     steps.append({
         "step": 2,
@@ -297,40 +281,22 @@ def validate_jwt_checklist(
         raw_signing_key = "firebase"
 
     if not raw_signing_key:
-        steps.append({
-            "step": 3,
-            "name": "Local Key ID (kid) Registry Lookup",
-            "passed": False,
-            "detail": f"Untrusted or unknown kid='{kid}' in JWT header (blocked potential kid injection)",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_untrusted_kid",
-            "reason": f"Untrusted key identifier kid='{kid}'",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 3, "Local Key ID (kid) Registry Lookup",
+            f"Untrusted or unknown kid='{kid}' in JWT header (blocked potential kid injection)",
+            "jwt_untrusted_kid", f"Untrusted key identifier kid='{kid}'",
+            header=header, payload=payload,
+        )
 
     try:
         signing_key, key_source_label = _prepare_verification_key(raw_signing_key, str(kid), alg, iss_claim)
     except Exception as exc:
-        steps.append({
-            "step": 3,
-            "name": "Local Key ID (kid) Registry Lookup",
-            "passed": False,
-            "detail": f"Failed to parse public key / X.509 certificate for kid='{kid}': {exc}",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_invalid_key",
-            "reason": f"Invalid verification key or X.509 certificate format: {exc}",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 3, "Local Key ID (kid) Registry Lookup",
+            f"Failed to parse public key / X.509 certificate for kid='{kid}': {exc}",
+            "jwt_invalid_key", f"Invalid verification key or X.509 certificate format: {exc}",
+            header=header, payload=payload,
+        )
 
     steps.append({
         "step": 3,
@@ -340,20 +306,29 @@ def validate_jwt_checklist(
     })
 
     # Step 4: Cryptographic signature verification
+    decode_opts = {
+        "verify_signature": True,
+        "verify_exp": False,
+        "verify_nbf": False,
+        "verify_iat": False,
+        "verify_aud": False,
+        "verify_iss": False,
+    }
     try:
-        jwt.decode(
-            raw,
-            signing_key,
-            algorithms=effective_allowed_algorithms,
-            options={
-                "verify_signature": True,
-                "verify_exp": False,
-                "verify_nbf": False,
-                "verify_iat": False,
-                "verify_aud": False,
-                "verify_iss": False,
-            },
-        )
+        try:
+            jwt.decode(raw, signing_key, algorithms=effective_allowed_algorithms, options=decode_opts)
+        except jwt.InvalidSignatureError:
+            if is_firebase_token and kid:
+                certs = _fetch_google_firebase_certs()
+                if kid in certs:
+                    from cryptography.x509 import load_pem_x509_certificate
+                    fb_pub = load_pem_x509_certificate(certs[kid].encode("utf-8")).public_key()
+                    jwt.decode(raw, fb_pub, algorithms=effective_allowed_algorithms, options=decode_opts)
+                    key_source_label = f"Google Firebase X.509 certificate (kid='{kid}')"
+                else:
+                    raise
+            else:
+                raise
         steps.append({
             "step": 4,
             "name": "Cryptographic Signature Verification",
@@ -361,97 +336,19 @@ def validate_jwt_checklist(
             "detail": f"{alg} cryptographic signature verified against {key_source_label}",
         })
     except jwt.InvalidSignatureError:
-        # If the user pasted a different kid's certificate from Google's Firebase JSON by mistake,
-        # check if Google's live cert for this token's `kid` matches and give a clear message or verify if Firebase
-        if is_firebase_token and kid:
-            certs = _fetch_google_firebase_certs()
-            if kid in certs:
-                try:
-                    from cryptography.x509 import load_pem_x509_certificate
-                    fb_pub = load_pem_x509_certificate(certs[kid].encode("utf-8")).public_key()
-                    jwt.decode(
-                        raw,
-                        fb_pub,
-                        algorithms=effective_allowed_algorithms,
-                        options={
-                            "verify_signature": True,
-                            "verify_exp": False,
-                            "verify_nbf": False,
-                            "verify_iat": False,
-                            "verify_aud": False,
-                            "verify_iss": False,
-                        },
-                    )
-                    steps.append({
-                        "step": 4,
-                        "name": "Cryptographic Signature Verification",
-                        "passed": True,
-                        "detail": f"RS256 signature verified using Google Firebase X.509 certificate for kid='{kid}'",
-                    })
-                except Exception:
-                    steps.append({
-                        "step": 4,
-                        "name": "Cryptographic Signature Verification",
-                        "passed": False,
-                        "detail": "CRITICAL: Signature mismatch — payload or header was tampered with",
-                    })
-                    return {
-                        "valid": False,
-                        "failure_code": "jwt_bad_signature",
-                        "reason": "JWT cryptographic signature verification failed",
-                        "owasp_id": "API2",
-                        "header": header,
-                        "payload": payload,
-                        "steps": steps,
-                    }
-            else:
-                steps.append({
-                    "step": 4,
-                    "name": "Cryptographic Signature Verification",
-                    "passed": False,
-                    "detail": "CRITICAL: Signature mismatch — payload or header was tampered with",
-                })
-                return {
-                    "valid": False,
-                    "failure_code": "jwt_bad_signature",
-                    "reason": "JWT cryptographic signature verification failed",
-                    "owasp_id": "API2",
-                    "header": header,
-                    "payload": payload,
-                    "steps": steps,
-                }
-        else:
-            steps.append({
-                "step": 4,
-                "name": "Cryptographic Signature Verification",
-                "passed": False,
-                "detail": "CRITICAL: Signature mismatch — payload or header was tampered with",
-            })
-            return {
-                "valid": False,
-                "failure_code": "jwt_bad_signature",
-                "reason": "JWT cryptographic signature verification failed",
-                "owasp_id": "API2",
-                "header": header,
-                "payload": payload,
-                "steps": steps,
-            }
+        return _fail_step(
+            steps, 4, "Cryptographic Signature Verification",
+            "CRITICAL: Signature mismatch — payload or header was tampered with",
+            "jwt_bad_signature", "JWT cryptographic signature verification failed",
+            header=header, payload=payload,
+        )
     except Exception as exc:
-        steps.append({
-            "step": 4,
-            "name": "Cryptographic Signature Verification",
-            "passed": False,
-            "detail": f"Signature verification failed: {exc}",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_bad_signature",
-            "reason": f"JWT signature error: {exc}",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 4, "Cryptographic Signature Verification",
+            f"Signature verification failed: {exc}",
+            "jwt_bad_signature", f"JWT signature error: {exc}",
+            header=header, payload=payload,
+        )
 
     # Step 5: Temporal claims (exp, nbf, iat) with clock-skew leeway
     now = int(time.time())
@@ -461,56 +358,29 @@ def validate_jwt_checklist(
     iat = payload.get("iat")
 
     if exp is None or not isinstance(exp, (int, float)):
-        steps.append({
-            "step": 5,
-            "name": "Temporal Claims (exp, nbf, iat) & Leeway",
-            "passed": False,
-            "detail": "Missing required 'exp' (expiration) claim",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_missing_exp",
-            "reason": "Missing exp claim",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 5, "Temporal Claims (exp, nbf, iat) & Leeway",
+            "Missing required 'exp' (expiration) claim",
+            "jwt_missing_exp", "Missing exp claim",
+            header=header, payload=payload,
+        )
 
     if now > int(exp) + leeway:
         expired_ago = now - int(exp)
-        steps.append({
-            "step": 5,
-            "name": "Temporal Claims (exp, nbf, iat) & Leeway",
-            "passed": False,
-            "detail": f"Token expired {expired_ago}s ago (leeway={leeway}s)",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_expired",
-            "reason": f"Token expired {expired_ago}s ago",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 5, "Temporal Claims (exp, nbf, iat) & Leeway",
+            f"Token expired {expired_ago}s ago (leeway={leeway}s)",
+            "jwt_expired", f"Token expired {expired_ago}s ago",
+            header=header, payload=payload,
+        )
 
     if nbf is not None and now + leeway < int(nbf):
-        steps.append({
-            "step": 5,
-            "name": "Temporal Claims (exp, nbf, iat) & Leeway",
-            "passed": False,
-            "detail": f"Token not valid before nbf={nbf} (now={now})",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_immature",
-            "reason": "Token nbf is in the future",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 5, "Temporal Claims (exp, nbf, iat) & Leeway",
+            f"Token not valid before nbf={nbf} (now={now})",
+            "jwt_immature", "Token nbf is in the future",
+            header=header, payload=payload,
+        )
 
     steps.append({
         "step": 5,
@@ -522,7 +392,6 @@ def validate_jwt_checklist(
     # Step 6: Issuer (iss) and Audience (aud) validation
     iss = payload.get("iss")
     aud = payload.get("aud")
-    # If testing a Firebase token against the global default VulnShop config, don't fail on VulnShop's iss/aud
     if is_firebase_token and not jwt_config:
         expected_issuer = None
         expected_audience = None
@@ -530,21 +399,12 @@ def validate_jwt_checklist(
     issuer_valid = not expected_issuer or iss == expected_issuer
     audience_valid = not expected_audience or aud == expected_audience
     if not issuer_valid or not audience_valid:
-        steps.append({
-            "step": 6,
-            "name": "Issuer (iss) & Audience (aud) Binding",
-            "passed": False,
-            "detail": f"Claim mismatch: got iss='{iss}', aud='{aud}' (expected iss='{expected_issuer or 'not required'}', aud='{expected_audience or 'not required'}')",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_invalid_claims",
-            "reason": "Invalid issuer (iss) or audience (aud)",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 6, "Issuer (iss) & Audience (aud) Binding",
+            f"Claim mismatch: got iss='{iss}', aud='{aud}' (expected iss='{expected_issuer or 'not required'}', aud='{expected_audience or 'not required'}')",
+            "jwt_invalid_claims", "Invalid issuer (iss) or audience (aud)",
+            header=header, payload=payload,
+        )
 
     steps.append({
         "step": 6,
@@ -560,40 +420,22 @@ def validate_jwt_checklist(
     # Step 7: JTI presence and revocation blacklist check
     jti = payload.get("jti")
     if require_jti and not jti:
-        steps.append({
-            "step": 7,
-            "name": "JTI Presence & Revocation Blacklist Check",
-            "passed": False,
-            "detail": "Missing required 'jti' unique token identifier",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_missing_jti",
-            "reason": "Missing required jti claim",
-            "owasp_id": "API2",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 7, "JTI Presence & Revocation Blacklist Check",
+            "Missing required 'jti' unique token identifier",
+            "jwt_missing_jti", "Missing required jti claim",
+            header=header, payload=payload,
+        )
 
     if jti:
         revoked = session.exec(select(RevokedToken).where(RevokedToken.jti == str(jti))).first()
         if revoked:
-            steps.append({
-                "step": 7,
-                "name": "JTI Presence & Revocation Blacklist Check",
-                "passed": False,
-                "detail": f"Token jti='{jti}' is on the revocation blacklist ({revoked.reason})",
-            })
-            return {
-                "valid": False,
-                "failure_code": "jwt_revoked",
-                "reason": f"Token jti='{jti}' has been revoked",
-                "owasp_id": "API2",
-                "header": header,
-                "payload": payload,
-                "steps": steps,
-            }
+            return _fail_step(
+                steps, 7, "JTI Presence & Revocation Blacklist Check",
+                f"Token jti='{jti}' is on the revocation blacklist ({revoked.reason})",
+                "jwt_revoked", f"Token jti='{jti}' has been revoked",
+                header=header, payload=payload,
+            )
 
     steps.append({
         "step": 7,
@@ -608,38 +450,20 @@ def validate_jwt_checklist(
     scopes = payload.get("scopes", [])
 
     if expected_role and role.lower() != expected_role.lower() and role.lower() != "admin":
-        steps.append({
-            "step": 8,
-            "name": "Downstream Identity & Role/Scope Extraction",
-            "passed": False,
-            "detail": f"Extracted sub='{sub}', role='{role}', but route requires role='{expected_role}' (OWASP API5)",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_insufficient_role",
-            "reason": f"Insufficient role '{role}' (requires '{expected_role}')",
-            "owasp_id": "API5",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 8, "Downstream Identity & Role/Scope Extraction",
+            f"Extracted sub='{sub}', role='{role}', but route requires role='{expected_role}' (OWASP API5)",
+            "jwt_insufficient_role", f"Insufficient role '{role}' (requires '{expected_role}')",
+            owasp_id="API5", header=header, payload=payload,
+        )
 
     if expected_scope and expected_scope not in scopes and role.lower() != "admin":
-        steps.append({
-            "step": 8,
-            "name": "Downstream Identity & Role/Scope Extraction",
-            "passed": False,
-            "detail": f"Missing required scope '{expected_scope}' in {scopes}",
-        })
-        return {
-            "valid": False,
-            "failure_code": "jwt_insufficient_scope",
-            "reason": f"Missing required scope '{expected_scope}'",
-            "owasp_id": "API5",
-            "header": header,
-            "payload": payload,
-            "steps": steps,
-        }
+        return _fail_step(
+            steps, 8, "Downstream Identity & Role/Scope Extraction",
+            f"Missing required scope '{expected_scope}' in {scopes}",
+            "jwt_insufficient_scope", f"Missing required scope '{expected_scope}'",
+            owasp_id="API5", header=header, payload=payload,
+        )
 
     steps.append({
         "step": 8,

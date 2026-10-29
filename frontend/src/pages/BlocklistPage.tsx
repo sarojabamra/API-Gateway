@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Ban, ShieldAlert, Trash2, Plus } from 'lucide-react';
+import { ShieldAlert, Trash2, Plus } from 'lucide-react';
 import { apiFetch, formatDateTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge } from '../components/shared/Badges';

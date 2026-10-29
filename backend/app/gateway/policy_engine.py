@@ -1,8 +1,60 @@
-import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from sqlmodel import Session, select
 from app.models import Policy, Route
+from app.demo_api.vulnshop import VULNSHOP_ORDERS
+
+PUBLIC_AUTH_PATHS = (
+    "/auth/login",
+    "/auth/jwt/login",
+    "/auth/register",
+    "/login",
+    "/register",
+    "/token",
+    "/oauth/token",
+    "/health",
+    "/api/health",
+)
+
+SENSITIVE_FLOW_KEYWORDS = (
+    "checkout",
+    "order",
+    "coupon",
+    "payment",
+    "transfer",
+    "booking",
+    "login",
+    "register",
+)
+
+
+def is_public_auth_path(path: str) -> bool:
+    norm = "/" + path.strip("/").lower()
+    return norm in PUBLIC_AUTH_PATHS or norm.endswith(PUBLIC_AUTH_PATHS)
+
+
+def infer_route_security(
+    path_pattern: str,
+    op_spec: Optional[Dict[str, Any]] = None,
+    root_spec: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Infers route security metadata from path conventions and optional OpenAPI operation spec."""
+    path_lower = path_pattern.lower()
+    tags_lower = str((op_spec or {}).get("tags", "")).lower()
+    has_security = bool((op_spec or {}).get("security") or (root_spec or {}).get("security"))
+    is_public = is_public_auth_path(path_lower)
+    is_admin = "admin" in path_lower or "admin" in tags_lower
+    has_id_param = "{" in path_pattern
+    is_sensitive = any(k in path_lower for k in SENSITIVE_FLOW_KEYWORDS)
+
+    return {
+        "auth_required": False if is_public else (has_security or is_admin),
+        "required_role": "admin" if is_admin else None,
+        "bola_check_enabled": has_id_param,
+        "is_sensitive_flow": is_sensitive,
+        "rate_limit_rpm": 20 if is_sensitive else 60,
+        "burst_capacity": 5 if is_sensitive else 15,
+    }
 
 
 def match_route_pattern(pattern: str, actual_path: str) -> Tuple[bool, Dict[str, str]]:
@@ -109,11 +161,11 @@ def check_bola_ownership(
     normalized_sub = (user_sub or "").replace("user-", "")
     normalized_obj = obj_id.replace("user-", "")
 
-    # Order 5001 belongs to user 101 in demo data
-    if route.path_pattern.startswith("/orders") and normalized_sub == "101" and normalized_obj == "5001":
+    if normalized_sub and normalized_sub == normalized_obj:
         return True, None
 
-    if normalized_sub and normalized_sub == normalized_obj:
+    order = VULNSHOP_ORDERS.get(obj_id)
+    if order and user_sub and order.get("owner_sub") == user_sub:
         return True, None
 
     return (

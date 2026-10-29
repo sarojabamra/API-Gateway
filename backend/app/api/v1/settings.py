@@ -8,52 +8,6 @@ from app.gateway.pipeline import gateway_state
 
 router = APIRouter(prefix="/settings", tags=["System Settings & RBAC User Management"])
 
-RBAC_CAPABILITIES_MATRIX = [
-    {
-        "role": "admin",
-        "label": "Platform Administrator",
-        "default_account": "admin@sentinel.local",
-        "permissions": [
-            "Full control over Gateway Master Switch, Users & RBAC Roles",
-            "Create, edit, delete, and toggle Security Policies & JWT Secrets",
-            "Incident triage, IP/User blocking, and JTI token revocation",
-            "Reset or re-seed demonstration telemetry",
-        ],
-    },
-    {
-        "role": "analyst",
-        "label": "SOC Security Analyst",
-        "default_account": "analyst@sentinel.local",
-        "permissions": [
-            "Monitor Live Traffic stream, Overview KPIs, and Deep Analytics",
-            "Triage Alerts, trigger AI Triage analysis, and add forensic notes",
-            "Block/unblock malicious IPs, users, and revoke compromised tokens",
-            "Toggle policies between Monitor (Dry-Run) and Enforce & run Attack Simulator",
-        ],
-    },
-    {
-        "role": "developer",
-        "label": "API Owner / Developer",
-        "default_account": "dev@sentinel.local",
-        "permissions": [
-            "Onboard Upstreams, register Routes, and import OpenAPI 3.0 specs",
-            "Resolve or block discovered Shadow APIs (OWASP API9)",
-            "Configure route rate limits, BOLA ownership checks, and API3 field redaction",
-            "Mint & debug JWT tokens in the Token Tester and manage API Keys",
-        ],
-    },
-    {
-        "role": "viewer",
-        "label": "Executive / Compliance Auditor",
-        "default_account": "viewer@sentinel.local",
-        "permissions": [
-            "Read-only visibility across Dashboards, Traffic, Alerts, and OWASP Coverage",
-            "Generate and export CSV/PDF Executive Security Posture Reports",
-            "Zero mutation privileges (cannot alter production policies or blocklists)",
-        ],
-    },
-]
-
 
 @router.get("")
 def get_settings_and_users(session: Session = Depends(get_session)):
@@ -66,7 +20,6 @@ def get_settings_and_users(session: Session = Depends(get_session)):
             "anomaly_zscore_threshold": gateway_state.anomaly_zscore_threshold,
             "retention_days": 30,
         },
-        "rbac_matrix": RBAC_CAPABILITIES_MATRIX,
         "users": [
             {
                 "id": u.id,
