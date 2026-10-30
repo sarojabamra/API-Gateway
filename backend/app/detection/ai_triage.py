@@ -116,7 +116,7 @@ async def generate_ai_triage_summary(alert: Alert, related_logs: List[RequestLog
         remediations.append(f"Revoke active JWT tokens (JTI blacklist) associated with principal '{alert.user_sub}'.")
     else:
         remediations.append("Enable strict JWT authentication and rate-limit burst controls on the targeted endpoint.")
-    remediations.append(f"Patch upstream VulnShop handler for '{alert.target_path}': {owasp_meta['root_cause']}")
+    remediations.append(f"Patch upstream handler for '{alert.target_path}': {owasp_meta['root_cause']}")
 
     return {
         "engine": "SentinelAI Neural Threat Triage Engine",

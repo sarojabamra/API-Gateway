@@ -43,7 +43,7 @@ def toggle_gateway_protection(
     gateway_state.gateway_enabled = payload.gateway_enabled
     return {
         "gateway_enabled": gateway_state.gateway_enabled,
-        "status_text": "GATEWAY ARMED (ENFORCING OWASP POLICIES)" if gateway_state.gateway_enabled else "GATEWAY BYPASSED (VULNSHOP EXPOSED DIRECTLY)",
+        "status_text": "GATEWAY ARMED (ENFORCING OWASP POLICIES)" if gateway_state.gateway_enabled else "GATEWAY BYPASSED (UPSTREAM EXPOSED DIRECTLY)",
     }
 
 

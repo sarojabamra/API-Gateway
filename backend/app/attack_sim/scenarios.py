@@ -5,7 +5,7 @@ import httpx
 from sqlmodel import Session, select
 from app.db import engine
 from app.models import Route, Upstream
-from app.gateway.auth import mint_demo_jwt
+from app.gateway.auth import infer_simulator_subject, mint_demo_jwt, simulator_object_id
 from app.gateway.pipeline import gateway_state
 from app.gateway.ratelimit import rate_limiter
 
@@ -130,12 +130,41 @@ async def execute_attack_scenario(
                 Route.registered == True,
             )
         ).all()
+        subject = infer_simulator_subject(session, upstream_id)
+        user_jwt = mint_demo_jwt(
+            sub=subject,
+            email="alice@sentinel.local",
+            role="user",
+            preset="valid_user",
+            session=session,
+            upstream_id=upstream_id,
+        )["token"]
+        alg_none_jwt = mint_demo_jwt(
+            sub=subject, preset="alg_none", session=session, upstream_id=upstream_id
+        )["token"]
+        tampered_jwt = mint_demo_jwt(
+            sub=subject, preset="tampered_sig", session=session, upstream_id=upstream_id
+        )["token"]
+
+    own_id = simulator_object_id(subject)
+    neighbor_ids = [str(int(own_id) + offset) for offset in range(1, 7)] + ["999"]
 
     prefix = f"/gw/{upstream.slug}"
 
     def gateway_url(path: str, query: str = "") -> str:
         clean = "/" + path.lstrip("/")
         return f"{prefix}{clean}{query}"
+
+    def sim_headers(
+        attacker_ip: str,
+        token: str = user_jwt,
+        user_agent: str = "SentinelGW-AttackSimulator/1.0",
+    ) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {token}",
+            "X-Simulated-Client-IP": attacker_ip,
+            "User-Agent": user_agent,
+        }
 
     def choose_route(
         keywords: tuple[str, ...] = (),
@@ -169,9 +198,9 @@ async def execute_attack_scenario(
 
         return max(candidates, key=score)
 
-    def concrete(route: Route | None, value: str = "102", fallback: str = "/") -> str:
+    def concrete(route: Route | None, value: str = "", fallback: str = "/") -> str:
         pattern = route.path_pattern if route else fallback
-        return re.sub(r"\{[^}]+\}", value, pattern)
+        return re.sub(r"\{[^}]+\}", value or own_id, pattern)
 
     bola_route = next(
         (
@@ -192,22 +221,18 @@ async def execute_attack_scenario(
     generic_get = choose_route((), ("GET",)) or (routes[0] if routes else None)
 
     targets = {
-        "bola": concrete(bola_route, "102", "/users/102"),
-        "login": concrete(login_route, "101", "/auth/login"),
-        "read": concrete(read_route, "101", "/users/me"),
-        "write": concrete(write_route, "101", "/auth/register"),
-        "rate": concrete(rate_route, "101", "/products"),
-        "admin": concrete(admin_route, "101", "/admin/users"),
-        "generic": concrete(generic_get, "101", "/search"),
+        "bola": concrete(bola_route, neighbor_ids[0], f"/users/{neighbor_ids[0]}"),
+        "login": concrete(login_route, own_id, "/auth/login"),
+        "read": concrete(read_route, own_id, "/users/me"),
+        "write": concrete(write_route, own_id, "/auth/register"),
+        "rate": concrete(rate_route, own_id, "/products"),
+        "admin": concrete(admin_route, own_id, "/admin/users"),
+        "generic": concrete(generic_get, own_id, "/search"),
         "shadow": "/sentinel-security-test/undocumented-probe",
     }
     # Keep simulated offenders isolated per API project so one project's auto-block
     # does not change another project's test results.
     ip_prefix = f"198.18.{(upstream_id % 240) + 1}"
-
-    user_jwt = mint_demo_jwt(sub="user-101", email="alice@vulnshop.io", role="user", preset="valid_user")["token"]
-    alg_none_jwt = mint_demo_jwt(preset="alg_none")["token"]
-    tampered_jwt = mint_demo_jwt(preset="tampered_sig")["token"]
 
     transport = httpx.ASGITransport(app=asgi_app)
     steps: List[Dict[str, Any]] = []
@@ -215,17 +240,13 @@ async def execute_attack_scenario(
     async with httpx.AsyncClient(transport=transport, base_url="http://local-gateway") as client:
         if scenario_id == "bola_enum":
             attacker_ip = f"{ip_prefix}.101"
-            for target_id in ["101", "102", "103", "104", "105", "106", "999"]:
+            for target_id in [own_id, *neighbor_ids]:
                 target_path = concrete(bola_route, target_id, targets["bola"])
                 bola_method = bola_route.method.upper() if bola_route else "GET"
                 resp = await client.request(
                     bola_method,
                     gateway_url(target_path),
-                    headers={
-                        "Authorization": f"Bearer {user_jwt}",
-                        "X-Simulated-Client-IP": attacker_ip,
-                        "User-Agent": "BOLA-ScraperBot/2.1",
-                    },
+                    headers=sim_headers(attacker_ip, user_agent="BOLA-ScraperBot/2.1"),
                 )
                 steps.append(_format_step(f"{bola_method} {gateway_url(target_path)}", "API1", resp))
 
@@ -236,10 +257,7 @@ async def execute_attack_scenario(
                 resp = await client.post(
                     gateway_url(targets["login"]),
                     json={"username": uname, "password": f"wrongPass!{idx}"},
-                    headers={
-                        "X-Simulated-Client-IP": attacker_ip,
-                        "User-Agent": "Hydra-CredentialStuffer/9.4",
-                    },
+                    headers=sim_headers(attacker_ip, user_agent="Hydra-CredentialStuffer/9.4"),
                 )
                 steps.append(_format_step(f"POST {gateway_url(targets['login'])} (user={uname})", "API2", resp))
 
@@ -247,21 +265,13 @@ async def execute_attack_scenario(
             attacker_ip = f"{ip_prefix}.202"
             r1 = await client.get(
                 gateway_url(targets["generic"]),
-                headers={
-                    "Authorization": f"Bearer {alg_none_jwt}",
-                    "X-Simulated-Client-IP": attacker_ip,
-                    "User-Agent": "JWT-Tool-Exploiter/1.3",
-                },
+                headers=sim_headers(attacker_ip, token=alg_none_jwt, user_agent="JWT-Tool-Exploiter/1.3"),
             )
             steps.append(_format_step(f"GET {gateway_url(targets['generic'])} [alg=none Forged JWT]", "API2", r1))
 
             r2 = await client.get(
                 gateway_url(targets["generic"]),
-                headers={
-                    "Authorization": f"Bearer {tampered_jwt}",
-                    "X-Simulated-Client-IP": attacker_ip,
-                    "User-Agent": "JWT-Tool-Exploiter/1.3",
-                },
+                headers=sim_headers(attacker_ip, token=tampered_jwt, user_agent="JWT-Tool-Exploiter/1.3"),
             )
             steps.append(_format_step(f"GET {gateway_url(targets['generic'])} [Tampered Signature role=admin]", "API2", r2))
 
@@ -269,10 +279,7 @@ async def execute_attack_scenario(
             attacker_ip = f"{ip_prefix}.150"
             r1 = await client.get(
                 gateway_url(targets["read"]),
-                headers={
-                    "Authorization": f"Bearer {user_jwt}",
-                    "X-Simulated-Client-IP": attacker_ip,
-                },
+                headers=sim_headers(attacker_ip),
             )
             steps.append(_format_step(f"GET {gateway_url(targets['read'])} [Check API3 Response Field Redaction]", "API3", r1))
 
@@ -287,23 +294,19 @@ async def execute_attack_scenario(
                     "role": "admin",
                     "is_admin": True,
                 },
-                headers={"X-Simulated-Client-IP": attacker_ip},
+                headers=sim_headers(attacker_ip),
             )
             steps.append(_format_step(f"{write_method} {gateway_url(targets['write'])} [Mass Assignment is_admin=true]", "API3", r2))
 
         elif scenario_id == "rate_flood":
             attacker_ip = f"{ip_prefix}.88"
             rate_limiter.reset_key(
-                f"upstream-{upstream_id}:{attacker_ip}:user-101:"
+                f"upstream-{upstream_id}:{attacker_ip}:{subject}:"
                 f"{rate_route.path_pattern if rate_route else targets['rate']}"
             )
             for i in range(1, 19):
                 method = rate_route.method.upper() if rate_route else "GET"
-                headers = {
-                    "Authorization": f"Bearer {user_jwt}",
-                    "X-Simulated-Client-IP": attacker_ip,
-                    "User-Agent": "SentinelGW-VelocityTester/4.0",
-                }
+                headers = sim_headers(attacker_ip, user_agent="SentinelGW-VelocityTester/4.0")
                 if method in ("POST", "PUT", "PATCH"):
                     response = await client.request(
                         method,
@@ -317,7 +320,7 @@ async def execute_attack_scenario(
 
             r_page = await client.get(
                 gateway_url(targets["generic"], "?limit=50000"),
-                headers={"X-Simulated-Client-IP": attacker_ip},
+                headers=sim_headers(attacker_ip),
             )
             steps.append(_format_step(f"GET {gateway_url(targets['generic'], '?limit=50000')} [Unbounded Pagination]", "API4", r_page))
 
@@ -328,11 +331,7 @@ async def execute_attack_scenario(
                 resp = await client.request(
                     admin_method,
                     gateway_url(targets["admin"]),
-                    headers={
-                        "Authorization": f"Bearer {user_jwt}",
-                        "X-Simulated-Client-IP": attacker_ip,
-                        "User-Agent": "PrivilegeScanner/1.0",
-                    },
+                    headers=sim_headers(attacker_ip, user_agent="PrivilegeScanner/1.0"),
                 )
                 steps.append(_format_step(f"{admin_method} {gateway_url(targets['admin'])} [Normal User Token #{i}]", "API5", resp))
 
@@ -340,19 +339,13 @@ async def execute_attack_scenario(
             attacker_ip = f"{ip_prefix}.199"
             r1 = await client.get(
                 gateway_url(targets["generic"], "?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/"),
-                headers={
-                    "Authorization": f"Bearer {user_jwt}",
-                    "X-Simulated-Client-IP": attacker_ip,
-                },
+                headers=sim_headers(attacker_ip),
             )
             steps.append(_format_step(f"GET {gateway_url(targets['generic'])}?url=169.254.169.254 [AWS Metadata SSRF]", "API7", r1))
 
             r2 = await client.get(
                 gateway_url(targets["generic"], "?url=http://127.0.0.1:6379/info"),
-                headers={
-                    "Authorization": f"Bearer {user_jwt}",
-                    "X-Simulated-Client-IP": attacker_ip,
-                },
+                headers=sim_headers(attacker_ip),
             )
             steps.append(_format_step(f"GET {gateway_url(targets['generic'])}?url=127.0.0.1:6379 [Loopback Redis SSRF]", "API7", r2))
 
@@ -360,15 +353,14 @@ async def execute_attack_scenario(
             attacker_ip = f"{ip_prefix}.250"
             r1 = await client.get(
                 gateway_url(targets["generic"], "?q=' UNION SELECT username, password_hash FROM users --"),
-                headers={"X-Simulated-Client-IP": attacker_ip, "User-Agent": "sqlmap/1.8"},
+                headers=sim_headers(attacker_ip, user_agent="sqlmap/1.8"),
             )
             steps.append(_format_step(f"GET {gateway_url(targets['generic'])}?q=' UNION SELECT ... [SQLi Payload]", "API8", r1))
 
             r2 = await client.get(
                 gateway_url(targets["shadow"]),
                 headers={
-                    "X-Simulated-Client-IP": attacker_ip,
-                    "User-Agent": "Nuclei-ShadowScanner/3.1",
+                    **sim_headers(attacker_ip, user_agent="Nuclei-ShadowScanner/3.1"),
                     "X-Simulator-Shadow": "1",
                 },
             )

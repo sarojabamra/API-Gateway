@@ -97,7 +97,7 @@ async def run_rate_limit_burst_test(
     per-request status codes and X-RateLimit-* headers so users can watch token bucket
     and sliding window throttling live.
     """
-    from app.gateway.auth import mint_demo_jwt
+    from app.gateway.auth import infer_simulator_subject, mint_demo_jwt
 
     count = min(max(1, payload.request_count), 60)
     clean_path = payload.path.lstrip("/")
@@ -105,7 +105,13 @@ async def run_rate_limit_burst_test(
     if not upstream:
         raise HTTPException(status_code=404, detail="Selected API project was not found")
     gateway_path = f"/gw/{upstream.slug}/{clean_path}"
-    jwt_token = mint_demo_jwt(sub="burst-tester", role="user")["token"]
+    jwt_token = mint_demo_jwt(
+        sub=infer_simulator_subject(session, payload.upstream_id, path=clean_path),
+        email="burst-tester@sentinel.local",
+        role="user",
+        session=session,
+        upstream_id=payload.upstream_id,
+    )["token"]
 
     results = []
     transport = httpx.ASGITransport(app=request.app)

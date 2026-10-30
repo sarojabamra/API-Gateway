@@ -14,15 +14,15 @@ class Settings(BaseSettings):
     DASHBOARD_TOKEN_EXPIRE_MINUTES: int = 1440
 
     # Gateway Consumer JWT Validation Settings (configurable at runtime too)
-    GATEWAY_JWT_SECRET: str = "vulnshop-consumer-jwt-secret-key-2026-hs256"
+    GATEWAY_JWT_SECRET: str = "sentinel-consumer-jwt-secret-key-2026-hs256"
     GATEWAY_JWT_PUBLIC_KEY: Optional[str] = None
     GATEWAY_ALLOWED_ALGORITHMS: List[str] = ["HS256"]
-    GATEWAY_JWT_ISSUER: str = "https://auth.vulnshop.internal"
-    GATEWAY_JWT_AUDIENCE: str = "vulnshop-api"
+    GATEWAY_JWT_ISSUER: str = "https://auth.sentinel.local"
+    GATEWAY_JWT_AUDIENCE: str = "sentinel-api"
     GATEWAY_JWT_LEEWAY_SECONDS: int = 10
     GATEWAY_REQUIRE_JTI: bool = True
 
-    # Default Upstream (VulnShop mounted locally on same server or custom URL)
+    # Default Upstream (Demo API mounted locally on same server or custom URL)
     DEFAULT_UPSTREAM_URL: str = "http://127.0.0.1:8000/demo"
 
     # Optional Claude API key for live AI triage (falls back to deterministic expert triage if unset)

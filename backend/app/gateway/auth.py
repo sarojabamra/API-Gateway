@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,7 +10,7 @@ import httpx
 import jwt
 from sqlmodel import Session, select
 from app.config import settings
-from app.models import ApiKey, RevokedToken, UpstreamJWTConfig
+from app.models import ApiKey, RequestLog, RevokedToken, UpstreamJWTConfig
 
 FIREBASE_GOOGLE_CERTS_URL = (
     "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com"
@@ -124,7 +125,7 @@ class JWTConfigRuntime:
         self.reject_alg_none: bool = True
         self.secret: str = settings.GATEWAY_JWT_SECRET
         self.trusted_kids: Dict[str, str] = {
-            "vulnshop-key-2026": settings.GATEWAY_JWT_SECRET,
+            "sentinel-key-2026": settings.GATEWAY_JWT_SECRET,
             "default": settings.GATEWAY_JWT_SECRET,
         }
 
@@ -483,18 +484,90 @@ def validate_jwt_checklist(
     }
 
 
+def _simulator_signing_material(jwt_config: Optional[Dict[str, Any]] = None) -> Tuple[str, str, Optional[str], Optional[str]]:
+    """
+    Prefer the selected project's HS256 shared secret so simulator traffic can pass
+    that project's JWT verification. Fall back to the gateway default key.
+    """
+    if jwt_config:
+        key = str(jwt_config.get("verification_key") or "").strip()
+        algorithms = [str(alg).upper() for alg in (jwt_config.get("allowed_algorithms") or [])]
+        can_sign_hs256 = (
+            bool(key)
+            and "BEGIN " not in key
+            and key.lower() != "firebase"
+            and (not algorithms or "HS256" in algorithms)
+        )
+        if can_sign_hs256:
+            issuer = str(jwt_config.get("issuer") or "").strip() or None
+            audience = str(jwt_config.get("audience") or "").strip() or None
+            return (key, "HS256", issuer, audience)
+    return (
+        jwt_runtime_config.secret,
+        "HS256",
+        jwt_runtime_config.issuer,
+        jwt_runtime_config.audience,
+    )
+
+
+def infer_simulator_subject(
+    session: Session,
+    upstream_id: int,
+    path: str = "",
+) -> str:
+    """
+    Pick a JWT `sub` that is safe for an arbitrary connected API.
+
+    Many backends do `int(token.sub)` to load User.id. Non-numeric subjects
+    pass gateway verification and then crash the upstream with 500.
+    Prefer a subject that already succeeded against this project; otherwise
+    use a numeric id from the target path; otherwise default to `1`.
+    """
+    prior = session.exec(
+        select(RequestLog.user_sub)
+        .where(
+            RequestLog.upstream_id == upstream_id,
+            RequestLog.decision == "allowed",
+            RequestLog.status_code < 400,
+            RequestLog.user_sub != None,
+        )
+        .order_by(RequestLog.id.desc())
+    ).first()
+    if prior:
+        candidate = str(prior).strip()
+        if candidate and not candidate.startswith("apikey:"):
+            return candidate
+
+    match = re.search(r"/(\d+)(?:/|$)", "/" + (path or "").lstrip("/"))
+    if match:
+        return match.group(1)
+    return "1"
+
+
+def simulator_object_id(subject: str) -> str:
+    """Numeric object id derived from a JWT subject (`user-101` → `101`)."""
+    digits = re.sub(r"\D", "", subject or "")
+    return digits or "1"
+
+
 def mint_demo_jwt(
     sub: str = "user-101",
-    email: str = "alice@vulnshop.io",
+    email: str = "alice@sentinel.local",
     role: str = "user",
     scopes: Optional[List[str]] = None,
     preset: str = "valid_user",
     session: Optional[Session] = None,
+    jwt_config: Optional[Dict[str, Any]] = None,
+    upstream_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Generates valid or intentionally malicious JWTs for the Token Tester and Attack Simulator."""
     now = int(time.time())
     if scopes is None:
         scopes = ["read:products", "read:orders", "write:orders"]
+    if jwt_config is None and session is not None and upstream_id is not None:
+        jwt_config = get_upstream_jwt_config(session, upstream_id)
+
+    signing_key, algorithm, issuer, audience = _simulator_signing_material(jwt_config)
 
     jti = f"jti-{uuid.uuid4().hex[:10]}"
     payload: Dict[str, Any] = {
@@ -502,28 +575,35 @@ def mint_demo_jwt(
         "email": email,
         "role": role,
         "scopes": scopes,
-        "iss": jwt_runtime_config.issuer,
-        "aud": jwt_runtime_config.audience,
         "iat": now,
         "nbf": now,
         "exp": now + 3600,
         "jti": jti,
     }
-    headers: Dict[str, Any] = {"alg": "HS256", "typ": "JWT", "kid": "vulnshop-key-2026"}
+    if str(sub).isdigit():
+        payload["user_id"] = int(sub)
+        payload["id"] = int(sub)
+    if issuer:
+        payload["iss"] = issuer
+    if audience:
+        payload["aud"] = audience
+    headers: Dict[str, Any] = {"alg": algorithm, "typ": "JWT"}
+    if not jwt_config:
+        headers["kid"] = "sentinel-key-2026"
 
     if preset == "valid_admin":
         payload["sub"] = "admin-999"
-        payload["email"] = "admin@vulnshop.io"
+        payload["email"] = "admin@sentinel.local"
         payload["role"] = "admin"
         payload["scopes"] = ["read:products", "read:orders", "write:orders", "admin:users"]
-        token = jwt.encode(payload, jwt_runtime_config.secret, algorithm="HS256", headers=headers)
+        token = jwt.encode(payload, signing_key, algorithm=algorithm, headers=headers)
         return {"token": token, "preset": preset, "description": "Valid Admin JWT with full scopes"}
 
     if preset == "expired":
         payload["iat"] = now - 7200
         payload["nbf"] = now - 7200
         payload["exp"] = now - 1800
-        token = jwt.encode(payload, jwt_runtime_config.secret, algorithm="HS256", headers=headers)
+        token = jwt.encode(payload, signing_key, algorithm=algorithm, headers=headers)
         return {"token": token, "preset": preset, "description": "Expired JWT (exp was 30 minutes ago)"}
 
     if preset == "alg_none":
@@ -536,7 +616,7 @@ def mint_demo_jwt(
         return {"token": token, "preset": preset, "description": "Forged unsigned JWT with alg=none and role=admin"}
 
     if preset == "tampered_sig":
-        valid_token = jwt.encode(payload, jwt_runtime_config.secret, algorithm="HS256", headers=headers)
+        valid_token = jwt.encode(payload, signing_key, algorithm=algorithm, headers=headers)
         parts = valid_token.split(".")
         # Escalate role in payload without re-signing
         tampered_payload = dict(payload, role="admin", sub="admin-999")
@@ -546,7 +626,7 @@ def mint_demo_jwt(
 
     if preset == "wrong_issuer":
         payload["iss"] = "https://evil-idp.attacker.io"
-        token = jwt.encode(payload, jwt_runtime_config.secret, algorithm="HS256", headers=headers)
+        token = jwt.encode(payload, signing_key, algorithm=algorithm, headers=headers)
         return {"token": token, "preset": preset, "description": "Signed token from untrusted issuer (iss mismatch)"}
 
     if preset == "revoked_jti":
@@ -561,10 +641,10 @@ def mint_demo_jwt(
                     revoked_by="analyst@sentinel.local",
                 ))
                 session.commit()
-        token = jwt.encode(payload, jwt_runtime_config.secret, algorithm="HS256", headers=headers)
+        token = jwt.encode(payload, signing_key, algorithm=algorithm, headers=headers)
         return {"token": token, "preset": preset, "description": "Token with JTI on the revocation blacklist"}
 
-    token = jwt.encode(payload, jwt_runtime_config.secret, algorithm="HS256", headers=headers)
+    token = jwt.encode(payload, signing_key, algorithm=algorithm, headers=headers)
     return {"token": token, "preset": "valid_user", "description": "Standard valid customer JWT (role=user)"}
 
 

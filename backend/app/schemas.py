@@ -30,7 +30,7 @@ class TokenTestRequest(BaseModel):
 
 class TokenMintRequest(BaseModel):
     sub: str = "user-101"
-    email: str = "alice@vulnshop.io"
+    email: str = "alice@sentinel.local"
     role: str = "user"
     scopes: List[str] = ["read:products", "read:orders", "write:orders"]
     preset: str = "valid_user"  # valid_user, valid_admin, expired, alg_none, tampered_sig, wrong_issuer, revoked_jti
