@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select
+from sqlmodel import Session, or_, select
 from app.db import get_session
 from app.models import Alert, Policy, RequestLog, to_ist_iso
 
@@ -21,38 +21,39 @@ def list_traffic_logs(
     upstream_id: int = Query(1),
     session: Session = Depends(get_session),
 ):
-    stmt = (
-        select(RequestLog)
-        .where(RequestLog.upstream_id == upstream_id)
-        .order_by(RequestLog.ts.desc())
-    )
-    logs = session.exec(stmt).all()
+    stmt = select(RequestLog).where(RequestLog.upstream_id == upstream_id)
+    if decision:
+        stmt = stmt.where(RequestLog.decision == decision)
+    if method:
+        stmt = stmt.where(RequestLog.method == method.upper())
+    if client_ip:
+        stmt = stmt.where(RequestLog.client_ip.contains(client_ip))
+    if owasp_id:
+        stmt = stmt.where(RequestLog.owasp_id == owasp_id)
+    if min_threat_score:
+        stmt = stmt.where(RequestLog.threat_score >= min_threat_score)
+    if status_class == "2xx":
+        stmt = stmt.where(RequestLog.status_code >= 200, RequestLog.status_code < 300)
+    elif status_class == "4xx":
+        stmt = stmt.where(RequestLog.status_code >= 400, RequestLog.status_code < 500)
+    elif status_class == "5xx":
+        stmt = stmt.where(RequestLog.status_code >= 500)
+    if search:
+        needle = f"%{search}%"
+        stmt = stmt.where(
+            or_(
+                RequestLog.request_id.ilike(needle),
+                RequestLog.path.ilike(needle),
+                RequestLog.client_ip.ilike(needle),
+                RequestLog.user_sub.ilike(needle),
+                RequestLog.block_reason.ilike(needle),
+                RequestLog.owasp_id.ilike(needle),
+            )
+        )
+    logs = session.exec(stmt.order_by(RequestLog.ts.desc()).limit(limit)).all()
 
     filtered = []
     for r in logs:
-        if decision and r.decision != decision:
-            continue
-        if method and r.method != method.upper():
-            continue
-        if status_class:
-            if status_class == "2xx" and not (200 <= r.status_code < 300):
-                continue
-            if status_class == "4xx" and not (400 <= r.status_code < 500):
-                continue
-            if status_class == "5xx" and r.status_code < 500:
-                continue
-        if client_ip and client_ip.lower() not in r.client_ip.lower():
-            continue
-        if owasp_id and r.owasp_id != owasp_id:
-            continue
-        if r.threat_score < min_threat_score:
-            continue
-        if search:
-            q = search.lower()
-            haystack = f"{r.request_id} {r.path} {r.client_ip} {r.user_sub or ''} {r.block_reason or ''} {r.owasp_id or ''}".lower()
-            if q not in haystack:
-                continue
-
         filtered.append({
             "id": r.id,
             "upstream_id": r.upstream_id,

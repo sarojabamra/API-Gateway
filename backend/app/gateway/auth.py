@@ -550,6 +550,108 @@ def simulator_object_id(subject: str) -> str:
     return digits or "1"
 
 
+def _decode_unverified_jwt(token: str) -> Tuple[Dict[str, Any], Dict[str, Any], str]:
+    raw = (token or "").strip()
+    if raw.lower().startswith("bearer "):
+        raw = raw[7:].strip()
+    if not raw:
+        raise ValueError("Invalid JWT: token is empty")
+    parts = raw.split(".")
+    if len(parts) != 3:
+        raise ValueError(
+            f"Invalid JWT: expected 3 dot-separated segments, got {len(parts)}"
+        )
+    try:
+        header = json.loads(_b64url_decode(parts[0]).decode("utf-8"))
+        payload = json.loads(_b64url_decode(parts[1]).decode("utf-8"))
+    except Exception:
+        raise ValueError("Invalid JWT: header or payload could not be decoded")
+    if not isinstance(header, dict) or not isinstance(payload, dict):
+        raise ValueError("Invalid JWT: header and payload must be JSON objects")
+    return header, payload, raw
+
+
+def subject_from_jwt_payload(payload: Dict[str, Any]) -> str:
+    candidates: List[str] = []
+    for key in ("sub", "user_id", "id", "uid", "userId"):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            candidates.append(str(value).strip())
+    if not candidates:
+        return "1"
+    for candidate in candidates:
+        if re.search(r"\d", candidate):
+            return candidate
+    return candidates[0]
+
+
+def resolve_simulator_user_jwt(
+    token: Optional[str],
+    session: Session,
+    upstream_id: int,
+) -> Dict[str, Any]:
+    """
+    Resolve the caller JWT used by the Attack Simulator for a specific project.
+
+    A supplied token must be a real, well-formed, non-expired JWT. When the
+    project has JWT verification configured, the token must also pass that
+    project's validator. An empty token falls back to a minted demo JWT.
+    """
+    raw_input = (token or "").strip()
+    if not raw_input:
+        subject = infer_simulator_subject(session, upstream_id)
+        minted = mint_demo_jwt(
+            sub=subject,
+            email="alice@sentinel.local",
+            role="user",
+            preset="valid_user",
+            session=session,
+            upstream_id=upstream_id,
+        )
+        return {
+            "token": minted["token"],
+            "subject": subject,
+            "header": {},
+            "payload": {"sub": subject, "role": "user"},
+            "source": "minted",
+        }
+
+    header, payload, raw = _decode_unverified_jwt(raw_input)
+    alg = str(header.get("alg") or "").strip()
+    signature = raw.split(".")[2]
+    if alg.lower() == "none" or not signature:
+        raise ValueError(
+            "Invalid JWT: unsigned alg=none tokens cannot be used as the project simulation token"
+        )
+
+    exp = payload.get("exp")
+    if exp is not None:
+        try:
+            exp_ts = int(exp)
+        except (TypeError, ValueError):
+            raise ValueError("Invalid JWT: exp claim is not a valid timestamp")
+        if exp_ts < int(time.time()) - 10:
+            raise ValueError("Invalid JWT: token has expired")
+
+    jwt_config = get_upstream_jwt_config(session, upstream_id)
+    if jwt_config:
+        result = validate_jwt_checklist(raw, session, jwt_config=jwt_config)
+        if not result.get("valid"):
+            reason = result.get("reason") or "token failed project JWT verification"
+            code = result.get("failure_code") or "jwt_invalid"
+            raise ValueError(f"Invalid JWT: {reason} ({code})")
+        payload = result.get("payload") or payload
+        header = result.get("header") or header
+
+    return {
+        "token": raw,
+        "subject": subject_from_jwt_payload(payload),
+        "header": header,
+        "payload": payload,
+        "source": "provided",
+    }
+
+
 def mint_demo_jwt(
     sub: str = "user-101",
     email: str = "alice@sentinel.local",

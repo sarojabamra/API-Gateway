@@ -148,8 +148,8 @@ export const OverviewPage: React.FC = () => {
       {/* Header Banner */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold text-white tracking-tight">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
               {selectedProjectName || 'Gateway'} Overview
             </h1>
             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
@@ -161,7 +161,7 @@ export const OverviewPage: React.FC = () => {
             Real-time traffic metrics, enforcement decisions, and active alerts for {selectedProjectName || 'the selected project'}.
           </p>
         </div>
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 flex-wrap">
           <button
             onClick={handleSendQuickTestRequest}
             disabled={testingLiveCall}
@@ -271,14 +271,17 @@ export const OverviewPage: React.FC = () => {
           </div>
           <div className="h-60">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={data?.top_endpoints || []} layout="vertical" margin={{ left: 20 }}>
+              <BarChart data={data?.top_endpoints || []} layout="vertical" margin={{ left: 4, right: 8 }}>
                 <XAxis type="number" stroke="#64748b" fontSize={11} />
                 <YAxis
                   type="category"
                   dataKey="endpoint"
                   stroke="#94a3b8"
                   fontSize={10}
-                  width={120}
+                  width={88}
+                  tickFormatter={(value: string) =>
+                    value.length > 14 ? `${value.slice(0, 13)}…` : value
+                  }
                 />
                 <Tooltip
                   contentStyle={{

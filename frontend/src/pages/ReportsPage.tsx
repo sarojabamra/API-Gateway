@@ -1,11 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import { Download, Printer, ShieldCheck } from 'lucide-react';
-import { apiFetch, formatDateTimeIST } from '../lib/api';
+import { apiFetch, downloadAuthenticatedFile, formatDateTimeIST } from '../lib/api';
+import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
 
 export const ReportsPage: React.FC = () => {
+  const { addToast } = useGatewayStore();
   const [report, setReport] = useState<any | null>(null);
   const [timeRange, setTimeRange] = useState('24h');
+  const [exporting, setExporting] = useState('');
+
+  const handleExport = async (endpoint: string, filename: string) => {
+    setExporting(endpoint);
+    try {
+      await downloadAuthenticatedFile(endpoint, filename);
+    } catch (err: any) {
+      addToast({ title: 'Export Failed', message: err.message, severity: 'high' });
+    } finally {
+      setExporting('');
+    }
+  };
 
   useEffect(() => {
     const loadReport = async () => {
@@ -26,7 +40,7 @@ export const ReportsPage: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">
+          <h1 className="text-xl sm:text-2xl font-bold text-white">
             Security Summary & Export Reports
           </h1>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -45,23 +59,25 @@ export const ReportsPage: React.FC = () => {
             <option value="7d">Last 7 Days</option>
           </select>
 
-          <a
-            href="/api/v1/reports/export/traffic.csv"
-            download
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-500/30 transition"
+          <button
+            type="button"
+            disabled={Boolean(exporting)}
+            onClick={() => handleExport('/reports/export/traffic.csv', 'sentinelgw_traffic_logs.csv')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-cyan-300 border border-cyan-500/30 transition disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5" />
-            Download Traffic CSV
-          </a>
+            {exporting.includes('traffic') ? 'Downloading...' : 'Download Traffic CSV'}
+          </button>
 
-          <a
-            href="/api/v1/reports/export/alerts.csv"
-            download
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 transition"
+          <button
+            type="button"
+            disabled={Boolean(exporting)}
+            onClick={() => handleExport('/reports/export/alerts.csv', 'sentinelgw_security_alerts.csv')}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 transition disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5" />
-            Download Alerts CSV
-          </a>
+            {exporting.includes('alerts') ? 'Downloading...' : 'Download Alerts CSV'}
+          </button>
 
           <button
             onClick={() => window.print()}
@@ -74,7 +90,7 @@ export const ReportsPage: React.FC = () => {
       </div>
 
       {/* Printable Report Sheet */}
-      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 space-y-6">
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-4 sm:p-6 space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-4 pb-5 border-b border-slate-800">
           <div>
             <span className="text-xs font-mono uppercase text-cyan-400">

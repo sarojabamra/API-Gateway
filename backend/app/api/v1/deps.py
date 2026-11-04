@@ -8,6 +8,8 @@ from app.config import settings
 from app.db import get_session
 from app.models import User
 
+VALID_ROLES = ("admin", "analyst", "developer", "viewer")
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -27,6 +29,7 @@ def create_dashboard_token(user: User) -> str:
         "email": user.email,
         "role": user.role,
         "full_name": user.full_name,
+        "organization_id": user.organization_id,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=settings.DASHBOARD_TOKEN_EXPIRE_MINUTES)).timestamp()),
     }
@@ -37,23 +40,32 @@ def get_current_user(
     authorization: Optional[str] = Header(default=None),
     session: Session = Depends(get_session),
 ) -> User:
-    if not authorization:
-        # Allow default fallback to admin in local demo if header omitted, or raise 401 when strict
-        user = session.exec(select(User).where(User.role == "admin")).first()
-        if user:
-            return user
+    if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    raw = authorization.replace("Bearer ", "").replace("bearer ", "").strip()
+    raw = authorization.split(" ", 1)[1].strip()
+    if not raw:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
     try:
-        payload = jwt.decode(raw, settings.DASHBOARD_JWT_SECRET, algorithms=[settings.DASHBOARD_JWT_ALGORITHM])
-        email = payload.get("email")
-        user = session.exec(select(User).where(User.email == email)).first()
-        if not user or not user.is_active:
-            raise HTTPException(status_code=401, detail="User inactive or not found")
-        return user
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail=f"Invalid dashboard session token: {exc}")
+        payload = jwt.decode(
+            raw,
+            settings.DASHBOARD_JWT_SECRET,
+            algorithms=[settings.DASHBOARD_JWT_ALGORITHM],
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Session expired. Please sign in again.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+
+    email = payload.get("email")
+    if not email:
+        raise HTTPException(status_code=401, detail="Invalid session token")
+
+    user = session.exec(select(User).where(User.email == email)).first()
+    if not user or not user.is_active:
+        raise HTTPException(status_code=401, detail="User inactive or not found")
+    return user
 
 
 def require_roles(allowed_roles: List[str]):

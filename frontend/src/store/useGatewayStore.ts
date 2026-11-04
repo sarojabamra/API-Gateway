@@ -40,17 +40,18 @@ interface GatewayState {
   canMutate: (allowedRoles?: UserRole[]) => boolean;
 }
 
-const DEFAULT_USER: UserProfile = {
-  id: 1,
-  email: 'admin@sentinel.local',
-  full_name: 'Elena Rostova (Platform Admin)',
-  role: 'admin',
-  is_active: true,
+const readStoredUser = (): UserProfile | null => {
+  try {
+    const raw = localStorage.getItem('sentinel_user');
+    return raw ? (JSON.parse(raw) as UserProfile) : null;
+  } catch {
+    return null;
+  }
 };
 
 export const useGatewayStore = create<GatewayState>((set, get) => ({
   token: localStorage.getItem('sentinel_token'),
-  user: JSON.parse(localStorage.getItem('sentinel_user') || JSON.stringify(DEFAULT_USER)),
+  user: readStoredUser(),
   gatewayEnabled: true,
   timeRange: '24h',
   globalSearch: '',

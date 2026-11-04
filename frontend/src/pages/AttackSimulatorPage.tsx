@@ -7,10 +7,41 @@ import {
   Play,
   Terminal,
   ExternalLink,
+  KeyRound,
+  CheckCircle2,
+  XCircle,
+  Eraser,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
+
+const simJwtStorageKey = (projectId: number | null) =>
+  projectId ? `sentinel_sim_jwt_${projectId}` : null;
+
+const readStoredSimJwt = (projectId: number | null) => {
+  const key = simJwtStorageKey(projectId);
+  if (!key) return '';
+  try {
+    return localStorage.getItem(key) || '';
+  } catch {
+    return '';
+  }
+};
+
+const writeStoredSimJwt = (projectId: number | null, token: string) => {
+  const key = simJwtStorageKey(projectId);
+  if (!key) return;
+  try {
+    if (token.trim()) {
+      localStorage.setItem(key, token.trim());
+    } else {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // ignore quota / private mode
+  }
+};
 
 export const AttackSimulatorPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -26,6 +57,12 @@ export const AttackSimulatorPage: React.FC = () => {
   const [owaspData, setOwaspData] = useState<any | null>(null);
   const [runningId, setRunningId] = useState<string | null>(null);
   const [lastResult, setLastResult] = useState<any | null>(null);
+  const [authJwt, setAuthJwt] = useState('');
+  const [jwtStatus, setJwtStatus] = useState<'idle' | 'validating' | 'valid' | 'invalid'>('idle');
+  const [jwtError, setJwtError] = useState('');
+  const [jwtMeta, setJwtMeta] = useState<any | null>(null);
+  const [lastValidatedToken, setLastValidatedToken] = useState('');
+  const [validatingJwt, setValidatingJwt] = useState(false);
 
   const loadData = async () => {
     try {
@@ -44,7 +81,66 @@ export const AttackSimulatorPage: React.FC = () => {
     }
   };
 
+  const validateProjectJwt = async (token: string) => {
+    const trimmed = token.trim();
+    if (!trimmed) {
+      setJwtStatus('invalid');
+      setJwtError('Invalid JWT: token is empty');
+      setJwtMeta(null);
+      setLastValidatedToken('');
+      return { valid: false, error: 'Invalid JWT: token is empty' };
+    }
+    if (!selectedProjectId) {
+      setJwtStatus('invalid');
+      setJwtError('Select a project before validating a JWT');
+      setJwtMeta(null);
+      return { valid: false, error: 'Select a project before validating a JWT' };
+    }
+
+    setValidatingJwt(true);
+    setJwtStatus('validating');
+    setJwtError('');
+    try {
+      const res = await apiFetch('/simulator/validate-token', {
+        method: 'POST',
+        body: JSON.stringify({
+          token: trimmed,
+          upstream_id: selectedProjectId,
+        }),
+      });
+      setJwtStatus('valid');
+      setJwtError('');
+      setJwtMeta(res);
+      setLastValidatedToken(trimmed);
+      writeStoredSimJwt(selectedProjectId, trimmed);
+      return { valid: true, error: '' };
+    } catch (err: any) {
+      const message = err?.message || 'Invalid JWT';
+      setJwtStatus('invalid');
+      setJwtError(message);
+      setJwtMeta(null);
+      setLastValidatedToken('');
+      return { valid: false, error: message };
+    } finally {
+      setValidatingJwt(false);
+    }
+  };
+
   const handleRunScenario = async (scenarioId: string) => {
+    const trimmed = authJwt.trim() || readStoredSimJwt(selectedProjectId);
+    if (trimmed) {
+      const alreadyValid = jwtStatus === 'valid' && lastValidatedToken === trimmed;
+      const check = alreadyValid ? { valid: true, error: '' } : await validateProjectJwt(trimmed);
+      if (!check.valid) {
+        addToast({
+          title: 'Invalid JWT',
+          message: check.error || 'Enter a valid JWT for this project before running simulations.',
+          severity: 'high',
+        });
+        return;
+      }
+    }
+
     setRunningId(scenarioId);
     try {
       const res = await apiFetch('/simulator/run', {
@@ -52,6 +148,7 @@ export const AttackSimulatorPage: React.FC = () => {
         body: JSON.stringify({
           scenario_id: scenarioId,
           upstream_id: selectedProjectId,
+          auth_token: trimmed || undefined,
         }),
       });
       setLastResult(res);
@@ -69,8 +166,18 @@ export const AttackSimulatorPage: React.FC = () => {
   };
 
   useEffect(() => {
+    const stored = readStoredSimJwt(selectedProjectId);
+    setAuthJwt(stored);
+    setJwtStatus('idle');
+    setJwtError('');
+    setJwtMeta(null);
+    setLastValidatedToken('');
+
     const init = async () => {
       await loadData();
+      if (stored) {
+        await validateProjectJwt(stored);
+      }
       const preselect = searchParams.get('scenario');
       if (preselect && selectedProjectId) {
         await handleRunScenario(preselect);
@@ -106,7 +213,7 @@ export const AttackSimulatorPage: React.FC = () => {
     <div className="space-y-6">
       {/* Top Banner with Gateway Master Switch & OWASP Coverage Summary */}
       <div
-        className={`p-6 rounded-2xl border transition ${
+        className={`p-4 sm:p-6 rounded-2xl border transition ${
           gatewayEnabled
             ? 'bg-gradient-to-r from-slate-900 via-emerald-950/30 to-slate-900 border-emerald-500/40'
             : 'bg-gradient-to-r from-slate-900 via-rose-950/40 to-slate-900 border-rose-500/50'
@@ -133,7 +240,7 @@ export const AttackSimulatorPage: React.FC = () => {
                 </span>
               )}
             </div>
-            <h1 className="text-2xl font-bold text-white">
+            <h1 className="text-xl sm:text-2xl font-bold text-white">
               Attack Simulator — {selectedProjectName || 'Selected Project'}
             </h1>
             <p className="text-xs text-slate-300 leading-relaxed">
@@ -171,14 +278,129 @@ export const AttackSimulatorPage: React.FC = () => {
 
             {canMutate(['admin', 'analyst', 'developer']) && (
               <button
-                disabled={runningId !== null}
+                disabled={runningId !== null || jwtStatus === 'invalid' || jwtStatus === 'validating'}
                 onClick={() => handleRunScenario('all')}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-lg transition"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-lg transition disabled:opacity-50"
               >
                 <Zap className="w-4 h-4" />
                 {runningId === 'all' ? 'Running Scenarios...' : 'Run All Scenarios'}
               </button>
             )}
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex items-start gap-2.5 max-w-3xl">
+            <KeyRound className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
+            <div>
+              <h2 className="text-sm font-bold text-white">
+                Project JWT for Simulations
+              </h2>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                Paste a real access token issued by{' '}
+                <strong className="text-slate-200">
+                  {selectedProjectName || 'the selected project'}
+                </strong>
+                . Every scenario for this project sends it as the Authorization bearer token so
+                the target API can authenticate the request. The token is stored in this
+                browser for this project only.
+              </p>
+            </div>
+          </div>
+          {jwtStatus === 'valid' && jwtMeta?.subject && (
+            <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              sub={jwtMeta.subject}
+            </span>
+          )}
+        </div>
+
+        <textarea
+          rows={3}
+          value={authJwt}
+          disabled={!canMutate(['admin', 'analyst', 'developer'])}
+          onChange={(e) => {
+            setAuthJwt(e.target.value);
+            if (jwtStatus !== 'idle') {
+              setJwtStatus('idle');
+              setJwtError('');
+              setJwtMeta(null);
+            }
+          }}
+          placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 font-mono text-xs text-cyan-300 placeholder:text-slate-600 disabled:opacity-50"
+        />
+
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-h-[1.5rem]">
+            {jwtStatus === 'valid' && (
+              <div className="inline-flex items-center gap-1.5 text-xs font-mono text-emerald-300">
+                <CheckCircle2 className="w-4 h-4" />
+                Valid JWT — will be used for all simulations on this project
+              </div>
+            )}
+            {jwtStatus === 'invalid' && (
+              <div className="inline-flex items-start gap-1.5 text-xs font-mono text-rose-300">
+                <XCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{jwtError || 'Invalid JWT'}</span>
+              </div>
+            )}
+            {jwtStatus === 'idle' && !authJwt.trim() && (
+              <p className="text-xs text-slate-500">
+                No project token entered. Simulations will fall back to a generated sample JWT,
+                which most connected APIs will reject.
+              </p>
+            )}
+            {jwtStatus === 'idle' && authJwt.trim() && (
+              <p className="text-xs text-amber-300/90">
+                Token changed — validate it before running attacks.
+              </p>
+            )}
+            {jwtStatus === 'validating' && (
+              <p className="text-xs font-mono text-slate-400">Validating JWT…</p>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!authJwt.trim() || !canMutate(['admin', 'analyst', 'developer'])}
+              onClick={() => {
+                setAuthJwt('');
+                setJwtStatus('idle');
+                setJwtError('');
+                setJwtMeta(null);
+                setLastValidatedToken('');
+                writeStoredSimJwt(selectedProjectId, '');
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium disabled:opacity-40 transition"
+            >
+              <Eraser className="w-3.5 h-3.5" />
+              Clear
+            </button>
+            <button
+              type="button"
+              disabled={
+                validatingJwt ||
+                !authJwt.trim() ||
+                !canMutate(['admin', 'analyst', 'developer'])
+              }
+              onClick={async () => {
+                const check = await validateProjectJwt(authJwt);
+                addToast({
+                  title: check.valid ? 'JWT Accepted' : 'Invalid JWT',
+                  message: check.valid
+                    ? `This token will be used for all ${selectedProjectName || 'project'} simulations.`
+                    : check.error || 'The token is not a valid JWT for this project.',
+                  severity: check.valid ? 'info' : 'high',
+                });
+              }}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs disabled:opacity-50 transition"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              {validatingJwt ? 'Validating...' : 'Validate & Use Token'}
+            </button>
           </div>
         </div>
       </div>
@@ -306,12 +528,17 @@ export const AttackSimulatorPage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between">
-                <span className="text-[11px] font-mono text-slate-400 truncate max-w-[240px]">
+              <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <span className="text-[11px] font-mono text-slate-400 truncate min-w-0">
                   {sc.target_endpoint}
                 </span>
                 <button
-                  disabled={runningId !== null || !canMutate(['admin', 'analyst', 'developer'])}
+                  disabled={
+                    runningId !== null ||
+                    jwtStatus === 'invalid' ||
+                    jwtStatus === 'validating' ||
+                    !canMutate(['admin', 'analyst', 'developer'])
+                  }
                   onClick={() => handleRunScenario(sc.id)}
                   className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-mono font-bold disabled:opacity-50 transition"
                 >

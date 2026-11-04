@@ -6,6 +6,15 @@ export interface UserProfile {
   full_name: string;
   role: UserRole;
   is_active: boolean;
+  organization_id?: number | null;
+  organization_name?: string | null;
+  organization_slug?: string | null;
+}
+
+export interface OrganizationSummary {
+  id: number;
+  name: string;
+  slug: string;
 }
 
 export interface TrafficLogItem {

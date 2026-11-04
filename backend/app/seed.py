@@ -12,6 +12,7 @@ from app.models import (
     ApiKey,
     BlocklistEntry,
     ClientBaseline,
+    Organization,
     Policy,
     RequestLog,
     RevokedToken,
@@ -20,6 +21,9 @@ from app.models import (
     UpstreamJWTConfig,
     User,
 )
+
+DEMO_ORG_SLUG = "sentinel-demo"
+DEMO_ORG_NAME = "Sentinel Demo"
 
 
 def backfill_route_security_defaults(session: Session) -> None:
@@ -43,14 +47,94 @@ def backfill_route_security_defaults(session: Session) -> None:
         if route_changed:
             session.add(route)
             changed = True
+    for policy in session.exec(select(Policy).where(Policy.type == "rate_limit")).all():
+        if "Sliding Window" in (policy.description or ""):
+            policy.description = (
+                "Enforces a Redis fixed-window counter plus token-bucket burst limits, "
+                "caps payload size at 64KB, and restricts `?limit=` pagination to <= 100."
+            )
+            session.add(policy)
+            changed = True
     if changed:
         session.commit()
+
+
+SEEDED_USERS = [
+    {
+        "email": "admin@sentinel.local",
+        "full_name": "Elena Rostova (Platform Admin)",
+        "role": "admin",
+        "last_login_offset": timedelta(minutes=12),
+    },
+    {
+        "email": "analyst@sentinel.local",
+        "full_name": "Marcus Vance (SOC Lead Analyst)",
+        "role": "analyst",
+        "last_login_offset": timedelta(minutes=4),
+    },
+    {
+        "email": "dev@sentinel.local",
+        "full_name": "Priya Nair (API Owner & Architect)",
+        "role": "developer",
+        "last_login_offset": timedelta(hours=2),
+    },
+    {
+        "email": "viewer@sentinel.local",
+        "full_name": "David Sterling (Compliance Auditor)",
+        "role": "viewer",
+        "last_login_offset": timedelta(hours=6),
+    },
+]
+
+
+def ensure_demo_organization(session: Session) -> Organization:
+    org = session.exec(select(Organization).where(Organization.slug == DEMO_ORG_SLUG)).first()
+    if org:
+        return org
+    org = Organization(name=DEMO_ORG_NAME, slug=DEMO_ORG_SLUG)
+    session.add(org)
+    session.commit()
+    session.refresh(org)
+    return org
+
+
+def ensure_seeded_users(session: Session, reset_credentials: bool = False) -> None:
+    """Create the four demo personas if missing. Never deletes registered accounts."""
+    demo_org = ensure_demo_organization(session)
+    default_pw = hash_password("sentinel123")
+    now = datetime.now(timezone.utc)
+    for spec in SEEDED_USERS:
+        existing = session.exec(select(User).where(User.email == spec["email"])).first()
+        if existing:
+            if reset_credentials:
+                existing.full_name = spec["full_name"]
+                existing.password_hash = default_pw
+                existing.role = spec["role"]
+                existing.is_active = True
+            if not existing.organization_id:
+                existing.organization_id = demo_org.id
+            session.add(existing)
+            continue
+        session.add(
+            User(
+                email=spec["email"],
+                full_name=spec["full_name"],
+                password_hash=default_pw,
+                role=spec["role"],
+                organization_id=demo_org.id,
+                is_active=True,
+                last_login_at=now - spec["last_login_offset"],
+            )
+        )
+    session.commit()
 
 
 def seed_all_data(session: Session, force_reset: bool = False) -> None:
     if not force_reset:
         existing_user = session.exec(select(User)).first()
         if existing_user:
+            # Keep older DBs usable after the organizations feature lands.
+            ensure_seeded_users(session, reset_credentials=False)
             return
 
     if force_reset:
@@ -65,52 +149,14 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
             Route,
             UpstreamJWTConfig,
             Upstream,
-            User,
         ):
             session.exec(delete(model))
         session.commit()
 
     now = datetime.now(timezone.utc)
 
-    # 1. Seed RBAC Users (4 distinct personas)
-    default_pw = hash_password("sentinel123")
-    users = [
-        User(
-            email="admin@sentinel.local",
-            full_name="Elena Rostova (Platform Admin)",
-            password_hash=default_pw,
-            role="admin",
-            is_active=True,
-            last_login_at=now - timedelta(minutes=12),
-        ),
-        User(
-            email="analyst@sentinel.local",
-            full_name="Marcus Vance (SOC Lead Analyst)",
-            password_hash=default_pw,
-            role="analyst",
-            is_active=True,
-            last_login_at=now - timedelta(minutes=4),
-        ),
-        User(
-            email="dev@sentinel.local",
-            full_name="Priya Nair (API Owner & Architect)",
-            password_hash=default_pw,
-            role="developer",
-            is_active=True,
-            last_login_at=now - timedelta(hours=2),
-        ),
-        User(
-            email="viewer@sentinel.local",
-            full_name="David Sterling (Compliance Auditor)",
-            password_hash=default_pw,
-            role="viewer",
-            is_active=True,
-            last_login_at=now - timedelta(hours=6),
-        ),
-    ]
-    for u in users:
-        session.add(u)
-    session.commit()
+    # 1. Seed demo organization + RBAC users. Registered accounts are preserved.
+    ensure_seeded_users(session, reset_credentials=force_reset)
 
     # 2. Seed Protected Upstream (VulnShop Demo API)
     upstream = Upstream(
@@ -361,7 +407,7 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
         ),
         Policy(
             name="Hybrid Rate Limiter & Pagination / Payload Cap",
-            description="Enforces Sliding Window Counter + Token Bucket burst limits, caps payload size at 64KB, and restricts `?limit=` pagination to <= 100.",
+            description="Enforces a Redis fixed-window counter plus token-bucket burst limits, caps payload size at 64KB, and restricts `?limit=` pagination to <= 100.",
             type="rate_limit",
             scope="global",
             owasp_id="API4",

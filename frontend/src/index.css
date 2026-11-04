@@ -3,8 +3,23 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    @apply overflow-x-hidden;
+  }
+
   body {
-    @apply bg-slate-950 text-slate-100;
+    @apply bg-slate-950 text-slate-100 overflow-x-hidden;
+  }
+
+  #root {
+    @apply min-h-screen min-w-0;
+  }
+}
+
+@layer utilities {
+  .break-anywhere {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 }
 
@@ -21,4 +36,16 @@
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
+}
+
+@media print {
+  aside,
+  header,
+  .no-print {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+  }
 }

@@ -7,12 +7,31 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RegisterRequest(BaseModel):
+    email: str
+    full_name: str
+    password: str
+    # create = start a new organization as its admin; join = join an existing one as viewer
+    organization_mode: str = "create"
+    organization_name: Optional[str] = None
+    organization_id: Optional[int] = None
+
+
+class OrganizationOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+
+
 class UserOut(BaseModel):
     id: int
     email: str
     full_name: str
     role: str
     is_active: bool
+    organization_id: Optional[int] = None
+    organization_name: Optional[str] = None
+    organization_slug: Optional[str] = None
 
 
 class LoginResponse(BaseModel):
@@ -107,4 +126,10 @@ class RateLimitBurstTestRequest(BaseModel):
 
 class SimulatorRunRequest(BaseModel):
     scenario_id: str  # bola_enum, brute_force, jwt_tamper, data_exposure, rate_flood, bfla_admin, ssrf_metadata, sqli_shadow, all
+    upstream_id: int = 1
+    auth_token: Optional[str] = None
+
+
+class SimulatorTokenValidateRequest(BaseModel):
+    token: str
     upstream_id: int = 1

@@ -72,7 +72,7 @@ export const AlertsPage: React.FC = () => {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">
+          <h1 className="text-xl sm:text-2xl font-bold text-white">
             {selectedProjectName || 'Project'} Security Alerts
           </h1>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -146,7 +146,7 @@ export const AlertsPage: React.FC = () => {
         </div>
 
         {canMutate(['admin', 'analyst']) && selectedIds.length > 0 && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-mono text-cyan-400">
               {selectedIds.length} selected:
             </span>
@@ -175,7 +175,7 @@ export const AlertsPage: React.FC = () => {
       {/* Alerts Table */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+          <table className="w-full min-w-[800px] text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 uppercase text-[10px]">
                 <th className="py-3 px-4 w-8">

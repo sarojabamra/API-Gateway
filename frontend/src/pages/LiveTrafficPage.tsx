@@ -87,8 +87,8 @@ export const LiveTrafficPage: React.FC = () => {
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold text-white">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="text-xl sm:text-2xl font-bold text-white">
               {selectedProjectName || 'Project'} Live Gateway Traffic
             </h1>
             <span
@@ -146,13 +146,13 @@ export const LiveTrafficPage: React.FC = () => {
           onChange={(e) => setIpFilter(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && fetchTraffic()}
           placeholder="Filter IP, path, req ID..."
-          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 w-52"
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder-slate-500 w-full sm:w-52"
         />
 
         <select
           value={decisionFilter}
           onChange={(e) => setDecisionFilter(e.target.value)}
-          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200"
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 w-full sm:w-auto"
         >
           <option value="">All Decisions</option>
           <option value="allowed">Allowed</option>
@@ -164,7 +164,7 @@ export const LiveTrafficPage: React.FC = () => {
         <select
           value={methodFilter}
           onChange={(e) => setMethodFilter(e.target.value)}
-          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200"
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 w-full sm:w-auto"
         >
           <option value="">All Methods</option>
           <option value="GET">GET</option>
@@ -176,7 +176,7 @@ export const LiveTrafficPage: React.FC = () => {
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200"
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 w-full sm:w-auto"
         >
           <option value="">All Status Codes</option>
           <option value="2xx">2xx Success</option>
@@ -187,7 +187,7 @@ export const LiveTrafficPage: React.FC = () => {
         <select
           value={owaspFilter}
           onChange={(e) => setOwaspFilter(e.target.value)}
-          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200"
+          className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 w-full sm:w-auto"
         >
           <option value="">All OWASP Categories</option>
           {['API1', 'API2', 'API3', 'API4', 'API5', 'API6', 'API7', 'API8', 'API9'].map((id) => (
@@ -216,7 +216,7 @@ export const LiveTrafficPage: React.FC = () => {
       {/* Streaming Table */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+          <table className="w-full min-w-[960px] text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 uppercase text-[10px]">
                 <th className="py-3 px-4">Time (IST)</th>

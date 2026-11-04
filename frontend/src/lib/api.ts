@@ -20,6 +20,13 @@ export async function apiFetch<T = any>(
     headers,
   });
 
+  if (response.status === 401 && !endpoint.startsWith('/auth/login') && !endpoint.startsWith('/auth/register')) {
+    useGatewayStore.getState().logout();
+    if (window.location.pathname !== '/login') {
+      window.location.assign('/login');
+    }
+  }
+
   if (!response.ok) {
     let errDetail = `HTTP ${response.status}`;
     try {
@@ -45,6 +52,36 @@ export async function apiFetch<T = any>(
   }
 
   return response.json();
+}
+
+export async function downloadAuthenticatedFile(endpoint: string, fallbackName: string): Promise<void> {
+  const token = useGatewayStore.getState().token;
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`/api/v1${endpoint}`, { headers });
+  if (response.status === 401) {
+    useGatewayStore.getState().logout();
+    window.location.assign('/login');
+    throw new Error('Not authenticated');
+  }
+  if (!response.ok) {
+    throw new Error(`Download failed (HTTP ${response.status})`);
+  }
+
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  link.href = url;
+  link.download = match?.[1] || fallbackName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function parseTimestamp(ts?: string | number | Date | null): Date | null {

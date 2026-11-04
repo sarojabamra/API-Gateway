@@ -89,7 +89,7 @@ export const BlocklistPage: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Active Blocklist & Automated Defense</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-white">Active Blocklist & Automated Defense</h1>
           <p className="text-xs text-slate-400 mt-0.5">
             Fast-reject (`Stage 3 - 403 Forbidden`) for blocked Client IPs, User `sub` principals, and compromised API keys.
           </p>
@@ -135,7 +135,7 @@ export const BlocklistPage: React.FC = () => {
               <option value="api_key">API Key ID</option>
             </select>
           </div>
-          <div className="w-48">
+          <div className="w-full sm:w-48">
             <label className="block text-slate-400 mb-1">Value to Block</label>
             <input
               type="text"
@@ -146,7 +146,7 @@ export const BlocklistPage: React.FC = () => {
               className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white font-mono"
             />
           </div>
-          <div className="flex-1 min-w-[200px]">
+          <div className="flex-1 min-w-0 sm:min-w-[200px] w-full sm:w-auto">
             <label className="block text-slate-400 mb-1">Block Reason</label>
             <input
               type="text"
@@ -194,7 +194,8 @@ export const BlocklistPage: React.FC = () => {
 
       {/* Blocklist Table */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden">
-        <table className="w-full text-left border-collapse text-xs">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] text-left border-collapse text-xs">
           <thead>
             <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 uppercase text-[10px]">
               <th className="py-3 px-4">Status</th>
@@ -249,6 +250,7 @@ export const BlocklistPage: React.FC = () => {
             ))}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   );

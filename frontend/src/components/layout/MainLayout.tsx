@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   Shield,
   LayoutDashboard,
@@ -18,16 +18,16 @@ import {
   Power,
   Search,
   Server,
+  Menu,
+  X,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
 import { useGatewayStore } from '../../store/useGatewayStore';
 import { RequestDetailDrawer } from '../shared/RequestDetailDrawer';
-import { UserRole } from '../../types/api';
 
 export const MainLayout: React.FC = () => {
   const {
     user,
-    setAuth,
     logout,
     gatewayEnabled,
     setGatewayEnabled,
@@ -44,7 +44,35 @@ export const MainLayout: React.FC = () => {
     setSelectedProject,
   } = useGatewayStore();
   const navigate = useNavigate();
+  const location = useLocation();
   const [projects, setProjects] = React.useState<any[]>([]);
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+
+  useEffect(() => {
+    setSidebarOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const closeOnDesktop = () => {
+      if (window.innerWidth >= 1024) setSidebarOpen(false);
+    };
+    window.addEventListener('resize', closeOnDesktop);
+    return () => window.removeEventListener('resize', closeOnDesktop);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setSidebarOpen(false);
+    };
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [sidebarOpen]);
 
   useEffect(() => {
     const loadProjects = async () => {
@@ -131,20 +159,6 @@ export const MainLayout: React.FC = () => {
     }
   };
 
-  const handleQuickRoleSwitch = async (role: UserRole) => {
-    try {
-      const res = await apiFetch(`/auth/quick-role-switch/${role}`, { method: 'POST' });
-      setAuth(res.access_token, res.user);
-      addToast({
-        title: `Switched Role to ${res.user.role.toUpperCase()}`,
-        message: `Viewing as ${res.user.full_name} (${res.user.email})`,
-        severity: 'info',
-      });
-    } catch (err: any) {
-      addToast({ title: 'Role Switch Failed', message: err.message, severity: 'high' });
-    }
-  };
-
   const navGroups = [
     {
       title: 'Monitoring',
@@ -175,27 +189,68 @@ export const MainLayout: React.FC = () => {
     },
   ];
 
+  const renderSearchField = () => (
+    <div className="relative w-full min-w-0 md:max-w-xs lg:max-w-sm">
+      <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+      <input
+        type="text"
+        value={globalSearch}
+        onChange={(e) => setGlobalSearch(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && globalSearch.trim()) {
+            navigate('/traffic');
+          }
+        }}
+        placeholder="Search IP, path, or request ID..."
+        className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
+      />
+    </div>
+  );
+
   return (
-    <div className="min-h-screen flex bg-slate-950 text-slate-100">
+    <div className="min-h-screen flex bg-slate-950 text-slate-100 overflow-x-hidden">
+      {sidebarOpen && (
+        <button
+          type="button"
+          aria-label="Close navigation"
+          className="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* Left Sidebar */}
-      <aside className="w-64 shrink-0 bg-slate-900/90 border-r border-slate-800 flex flex-col justify-between">
-        <div>
-          <div className="h-16 px-5 flex items-center gap-3 border-b border-slate-800">
-            <div className="p-2 rounded-xl bg-cyan-500/15 border border-cyan-500/40 text-cyan-400">
-              <Shield className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-bold text-white tracking-tight flex items-center gap-1.5">
-                SentinelGW
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300">
-                  v1.0
-                </span>
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 w-64 max-w-[85vw] bg-slate-900/95 border-r border-slate-800 flex flex-col justify-between transform transition-transform duration-200 lg:static lg:translate-x-0 lg:max-w-none lg:shrink-0 ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="min-h-0 flex-1 flex flex-col">
+          <div className="h-16 px-5 flex items-center justify-between gap-3 border-b border-slate-800 shrink-0">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="p-2 rounded-xl bg-cyan-500/15 border border-cyan-500/40 text-cyan-400 shrink-0">
+                <Shield className="w-5 h-5" />
               </div>
-              <div className="text-[11px] text-slate-400">API Security Gateway</div>
+              <div className="min-w-0">
+                <div className="font-bold text-white tracking-tight flex items-center gap-1.5">
+                  SentinelGW
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300">
+                    v1.0
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-400">API Security Gateway</div>
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(false)}
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 lg:hidden"
+              aria-label="Close menu"
+            >
+              <X className="w-4 h-4" />
+            </button>
           </div>
 
-          <nav className="p-3 space-y-5 overflow-y-auto max-h-[calc(100vh-11rem)]">
+          <nav className="p-3 space-y-5 overflow-y-auto flex-1">
             {navGroups.map((group) => (
               <div key={group.title}>
                 <div className="px-3 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
@@ -209,6 +264,7 @@ export const MainLayout: React.FC = () => {
                         key={item.to}
                         to={item.to}
                         end={item.to === '/'}
+                        onClick={() => setSidebarOpen(false)}
                         className={({ isActive }) =>
                           `flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs font-medium transition ${
                             isActive
@@ -229,14 +285,15 @@ export const MainLayout: React.FC = () => {
         </div>
 
         {/* User Card */}
-        <div className="p-3 border-t border-slate-800">
+        <div className="p-3 border-t border-slate-800 shrink-0">
           <div className="flex items-center justify-between px-2.5 py-2 rounded-lg bg-slate-950 border border-slate-800">
             <div className="truncate pr-2">
               <div className="text-xs font-semibold text-white truncate">
                 {user?.full_name || 'Admin'}
               </div>
-              <div className="text-[11px] font-mono text-slate-400 uppercase">
+              <div className="text-[11px] font-mono text-slate-400 uppercase truncate">
                 {user?.role || 'admin'}
+                {user?.organization_name ? ` · ${user.organization_name}` : ''}
               </div>
             </div>
             <button
@@ -254,101 +311,89 @@ export const MainLayout: React.FC = () => {
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 w-full">
         {/* Topbar */}
-        <header className="h-16 bg-slate-900/75 border-b border-slate-800 px-6 flex items-center justify-between gap-4 sticky top-0 z-30 backdrop-blur-md">
-          {/* Global Search */}
-          <div className="relative w-72 hidden md:block">
-            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={globalSearch}
-              onChange={(e) => setGlobalSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && globalSearch.trim()) {
-                  navigate('/traffic');
-                }
-              }}
-              placeholder="Search IP, path, or request ID..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/50"
-            />
-          </div>
-
-          <div className="flex items-center gap-3 ml-auto">
-            {/* Global project context */}
-            {projects.length > 0 && (
-              <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
-                <Server className="w-3.5 h-3.5 text-cyan-400" />
-                <span className="text-[10px] font-mono uppercase text-slate-500">Monitoring:</span>
-                <select
-                  value={selectedProjectId || ''}
-                  onChange={(e) => {
-                    const project = projects.find((p: any) => p.id === Number(e.target.value));
-                    if (project) setSelectedProject(project.id, project.name, project.slug);
-                  }}
-                  className="max-w-52 bg-slate-950 text-xs font-medium text-slate-200 focus:outline-none"
-                >
-                  {projects.map((project: any) => (
-                    <option key={project.id} value={project.id}>
-                      {project.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {/* Gateway Master Status Pill */}
+        <header className="sticky top-0 z-30 bg-slate-900/75 border-b border-slate-800 backdrop-blur-md">
+          <div className="px-3 sm:px-4 lg:px-6 py-2 min-h-16 flex flex-wrap items-center gap-2 sm:gap-3">
             <button
-              onClick={handleToggleGateway}
-              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-mono font-semibold border transition ${
-                gatewayEnabled
-                  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
-                  : 'bg-rose-500/20 text-rose-300 border-rose-500/50'
-              }`}
-              title="Turn Gateway ON or OFF"
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className="p-2 rounded-lg bg-slate-950 border border-slate-800 text-slate-300 hover:text-white lg:hidden"
+              aria-label="Open navigation"
             >
-              <Power className="w-3.5 h-3.5" />
-              {gatewayEnabled ? 'GATEWAY: ON' : 'GATEWAY: OFF'}
+              <Menu className="w-4 h-4" />
             </button>
 
-            {/* Time Range Picker */}
-            <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 text-xs font-mono">
-              {(['15m', '1h', '24h', '7d'] as const).map((tr) => (
-                <button
-                  key={tr}
-                  onClick={() => setTimeRange(tr)}
-                  className={`px-2.5 py-1 rounded-md transition ${
-                    timeRange === tr
-                      ? 'bg-cyan-500/20 text-cyan-300 font-semibold'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {tr}
-                </button>
-              ))}
+            <div className="hidden md:block flex-1 min-w-0 max-w-sm">{renderSearchField()}</div>
+
+            <div className="flex items-center gap-2 sm:gap-3 ml-auto flex-wrap justify-end">
+              {projects.length > 0 && (
+                <div className="flex items-center gap-1.5 sm:gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2 sm:px-2.5 py-1 max-w-[min(100%,16rem)]">
+                  <Server className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  <span className="hidden xl:inline text-[10px] font-mono uppercase text-slate-500">
+                    Monitoring:
+                  </span>
+                  <select
+                    value={selectedProjectId || ''}
+                    onChange={(e) => {
+                      const project = projects.find((p: any) => p.id === Number(e.target.value));
+                      if (project) setSelectedProject(project.id, project.name, project.slug);
+                    }}
+                    className="min-w-0 max-w-[9rem] sm:max-w-52 bg-slate-950 text-xs font-medium text-slate-200 focus:outline-none"
+                  >
+                    {projects.map((project: any) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <button
+                onClick={handleToggleGateway}
+                className={`flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-mono font-semibold border transition ${
+                  gatewayEnabled
+                    ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
+                    : 'bg-rose-500/20 text-rose-300 border-rose-500/50'
+                }`}
+                title="Turn Gateway ON or OFF"
+              >
+                <Power className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">{gatewayEnabled ? 'GATEWAY: ON' : 'GATEWAY: OFF'}</span>
+                <span className="sm:hidden">{gatewayEnabled ? 'ON' : 'OFF'}</span>
+              </button>
+
+              <div className="flex items-center bg-slate-950 border border-slate-800 rounded-lg p-0.5 text-xs font-mono">
+                {(['15m', '1h', '24h', '7d'] as const).map((tr) => (
+                  <button
+                    key={tr}
+                    onClick={() => setTimeRange(tr)}
+                    className={`px-1.5 sm:px-2.5 py-1 rounded-md transition ${
+                      timeRange === tr
+                        ? 'bg-cyan-500/20 text-cyan-300 font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {tr}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-1.5 sm:gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2 sm:px-2.5 py-1">
+                <span className="hidden sm:inline text-[10px] font-mono uppercase text-slate-500">Role:</span>
+                <span className="text-[11px] font-mono font-semibold uppercase text-cyan-300">
+                  {user?.role || 'viewer'}
+                </span>
+              </div>
             </div>
 
-            {/* Role Switcher */}
-            <div className="flex items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
-              <span className="text-[10px] font-mono uppercase text-slate-500">Role:</span>
-              <select
-                value={user?.role || 'viewer'}
-                onChange={(e) => handleQuickRoleSwitch(e.target.value as UserRole)}
-                className="bg-slate-950 text-[11px] font-mono font-semibold uppercase text-slate-200 focus:outline-none cursor-pointer"
-                aria-label="Switch active role"
-              >
-                {(['admin', 'analyst', 'developer', 'viewer'] as UserRole[]).map((role) => (
-                  <option key={role} value={role}>
-                    {role.charAt(0).toUpperCase() + role.slice(1)}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <div className="w-full md:hidden">{renderSearchField()}</div>
           </div>
         </header>
 
         {/* Toast Notifications */}
-        <div className="fixed bottom-5 right-5 z-50 space-y-2 max-w-md">
+        <div className="fixed bottom-4 inset-x-4 sm:inset-x-auto sm:right-5 sm:bottom-5 z-50 space-y-2 sm:max-w-md no-print">
           {toasts.map((t) => (
             <div
               key={t.id}
@@ -362,13 +407,13 @@ export const MainLayout: React.FC = () => {
               }`}
             >
               <div className="text-xs font-bold font-mono uppercase tracking-wider">{t.title}</div>
-              <div className="text-xs mt-0.5 text-slate-200">{t.message}</div>
+              <div className="text-xs mt-0.5 text-slate-200 break-anywhere">{t.message}</div>
             </div>
           ))}
         </div>
 
         {/* Page Outlet */}
-        <main className="flex-1 p-6 overflow-x-hidden">
+        <main className="flex-1 p-3 sm:p-4 lg:p-6 overflow-x-hidden min-w-0">
           <Outlet />
         </main>
       </div>

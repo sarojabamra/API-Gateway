@@ -178,7 +178,7 @@ export const AuthSettingsPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">
+        <h1 className="text-xl sm:text-2xl font-bold text-white">
           Authentication Settings & 8-Step JWT Token Tester
         </h1>
         <p className="text-xs text-slate-400 mt-0.5">
@@ -336,7 +336,7 @@ export const AuthSettingsPage: React.FC = () => {
             {/* 8-Step Checklist */}
             <div className="lg:col-span-7 space-y-2">
               <div
-                className={`p-3 rounded-lg border text-xs font-mono font-bold flex items-center justify-between ${
+                className={`p-3 rounded-lg border text-xs font-mono font-bold flex items-start sm:items-center justify-between gap-2 flex-wrap ${
                   testResult.valid
                     ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
                     : 'bg-rose-500/15 border-rose-500/40 text-rose-300'

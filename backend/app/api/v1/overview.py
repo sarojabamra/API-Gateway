@@ -32,15 +32,16 @@ def get_overview_dashboard(
     cutoff = now - delta
     prev_cutoff = cutoff - delta
 
-    all_logs = session.exec(
+    window_logs = session.exec(
         select(RequestLog)
-        .where(RequestLog.upstream_id == upstream_id)
+        .where(RequestLog.upstream_id == upstream_id, RequestLog.ts >= prev_cutoff)
         .order_by(RequestLog.ts.desc())
+        .limit(20000)
     ).all()
     curr_logs: List[RequestLog] = []
     prev_logs: List[RequestLog] = []
 
-    for lg in all_logs:
+    for lg in window_logs:
         ts_utc = lg.ts if lg.ts.tzinfo else lg.ts.replace(tzinfo=timezone.utc)
         if ts_utc >= cutoff:
             curr_logs.append(lg)
@@ -48,8 +49,15 @@ def get_overview_dashboard(
             prev_logs.append(lg)
 
     # Fallback if tight time window has few logs so dashboard always looks informative
-    if len(curr_logs) < 5 and all_logs:
-        curr_logs = all_logs[:250]
+    if len(curr_logs) < 5:
+        recent_logs = session.exec(
+            select(RequestLog)
+            .where(RequestLog.upstream_id == upstream_id)
+            .order_by(RequestLog.ts.desc())
+            .limit(250)
+        ).all()
+        if recent_logs:
+            curr_logs = recent_logs
 
     total_requests = len(curr_logs)
     prev_total = max(1, len(prev_logs))

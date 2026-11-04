@@ -560,14 +560,13 @@ SQLite is suitable for the planned prototype and demonstration phase. A producti
 
 ### 8.4 Runtime State
 
-The prototype may use in-memory state for:
+Rate-limit counters and burst-detection history are stored in Redis when `REDIS_URL` is set, so multiple gateway instances enforce the same limits:
 
-- Token-bucket counters.
-- Sliding-window rate counters.
-- Behavioral detection windows.
-- WebSocket connections.
+- Fixed-window request counters.
+- Token-bucket burst counters.
+- Per-client burst baselines used for Z-score detection.
 
-For production, this state should move to a shared system such as Redis so multiple gateway instances can enforce consistent limits.
+Behavioral correlation windows and WebSocket connections can stay in process memory. With no Redis URL, the rate-limit and burst rules run in process memory.
 
 ---
 

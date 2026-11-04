@@ -12,7 +12,7 @@
    - **Stage 3 — Route Matching & Shadow API Discovery (`API9:2023`)**: Matches against the registered route inventory and flags undocumented/legacy endpoints.
    - **Stage 4 — 8-Step Cryptographic JWT & API Key Validator (`API2:2023`)**: Enforces `alg` whitelist (blocks `alg:none`), HMAC signature verification, `exp`, `nbf`, `iat` (+30s skew limit), `iss`, `aud`, and `jti` revocation check.
    - **Stage 5 — Object & Function Level Authorization (`API1:2023` BOLA & `API5:2023` BFLA)**: Enforces role RBAC (`admin` vs `customer`) and verifies JWT `sub` ownership against path `{id}` parameters.
-   - **Stage 6 — Hybrid Rate Limiter (`API4:2023` & `API6:2023`)**: Combines **Sliding Window Counter** + **Token Bucket** burst control with `X-RateLimit-*` and `Retry-After` headers.
+   - **Stage 6 — Hybrid Rate Limiter (`API4:2023` & `API6:2023`)**: Redis **fixed-window counter** for sustained RPM plus a Redis **token bucket** for burst control, with `X-RateLimit-*` and `Retry-After` headers. Burst detection keeps per-client 15-second counts and history in Redis and scores them with a rolling Z-score.
    - **Stage 7 — Deep Payload & Query Inspector (`API3`, `API4`, `API7`, `API8`)**: Blocks SSRF internal IP/metadata targets, SQLi/NoSQLi/XSS/Command Injection/Path Traversal, Mass Assignment fields (`role`, `is_admin`, `balance`), and excessive pagination (`?limit=5000`).
    - **Stage 8 — Async Upstream Forwarding**: Proxies validated requests to the target upstream (`VulnShop`).
    - **Stage 9 — Response Hardening & PII Redaction (`API3:2023` & `API8:2023`)**: Strips sensitive fields (`password_hash`, `ssn`, `secret_mfa_seed`, `credit_card_last4`), removes leaky `Server`/`X-Powered-By` headers, injects `CSP`/`HSTS`/`X-Frame-Options`, and sanitizes `500` stack traces.
@@ -27,7 +27,7 @@
 
 ### Option A: Local Development (Zero External Dependencies)
 
-SentinelGW defaults to SQLite (`sentinel_gateway.db`) and an in-memory sliding-window/token-bucket store, so it runs out of the box with zero external containers required.
+SentinelGW defaults to SQLite (`sentinel_gateway.db`). Set `REDIS_URL` (for example `redis://127.0.0.1:6379/0`) to store rate-limit counters and burst-detection history in Redis. With no Redis URL, those same fixed-window and token-bucket rules run in process memory.
 
 ```bash
 # 1. Start Backend (Port 8000)
@@ -43,11 +43,19 @@ npm run dev
 
 Open **`http://localhost:5173`** and click any of the **4 Demo Persona Cards** on the login page.
 
-### Option B: Docker Compose
+### Option B: Docker Compose (Postgres, Redis, multiple workers)
 
 ```bash
 docker compose up --build
 ```
+
+This starts Postgres, Redis, 4 Uvicorn workers behind nginx on port `8000`, and the dashboard on port `5173`. To add more API processes:
+
+```bash
+docker compose up --build --scale backend=3
+```
+
+Local development without Docker still uses SQLite. Set `REDIS_URL` and a Postgres `DATABASE_URL` when you want the same shared-state path on a laptop.
 
 ---
 

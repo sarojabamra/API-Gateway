@@ -26,7 +26,10 @@ def get_rate_limits_overview(
 
     return {
         "backend_engine": rate_limiter.backend_type,
-        "algorithms": ["Sliding Window Counter (60s window)", "Token Bucket (Burst Capacity Control)"],
+        "algorithms": [
+            "Redis Fixed Window Counter (60s)" if rate_limiter.backend_type == "redis" else "Fixed Window Counter (60s)",
+            "Redis Token Bucket (Burst Capacity)" if rate_limiter.backend_type == "redis" else "Token Bucket (Burst Capacity)",
+        ],
         "route_limits": [
             {
                 "id": r.id,
@@ -94,8 +97,8 @@ async def run_rate_limit_burst_test(
 ):
     """
     Simulates N rapid requests through /gw/{path} from a test client IP and returns
-    per-request status codes and X-RateLimit-* headers so users can watch token bucket
-    and sliding window throttling live.
+    per-request status codes and X-RateLimit-* headers so users can watch fixed-window
+    and token-bucket throttling live.
     """
     from app.gateway.auth import infer_simulator_subject, mint_demo_jwt
 

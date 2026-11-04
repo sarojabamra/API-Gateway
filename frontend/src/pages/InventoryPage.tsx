@@ -357,7 +357,7 @@ export const InventoryPage: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2.5">
-            <h1 className="text-2xl font-bold text-white">API Projects & Routes</h1>
+            <h1 className="text-xl sm:text-2xl font-bold text-white">API Projects & Routes</h1>
           </div>
           <p className="text-xs text-slate-400 mt-1">
             Manage connected API projects, registered routes, shadow API discovery, and OpenAPI specifications.
@@ -382,20 +382,20 @@ export const InventoryPage: React.FC = () => {
           </h2>
         </div>
 
-        <form onSubmit={handleSyncSwaggerUrl} className="flex flex-wrap items-center gap-2.5">
+        <form onSubmit={handleSyncSwaggerUrl} className="flex flex-col sm:flex-wrap sm:flex-row sm:items-center gap-2.5">
           <input
             type="text"
             value={projectNameInput}
             onChange={(e) => setProjectNameInput(e.target.value)}
             placeholder="Project name (optional)"
-            className="w-48 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white"
+            className="w-full sm:w-48 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white"
           />
           <input
             type="text"
             value={projectSlugInput}
             onChange={(e) => setProjectSlugInput(e.target.value)}
             placeholder="Slug e.g. my-api (optional)"
-            className="w-48 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white font-mono"
+            className="w-full sm:w-48 bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white font-mono"
           />
           <input
             type="text"
@@ -403,12 +403,12 @@ export const InventoryPage: React.FC = () => {
             value={swaggerUrlInput}
             onChange={(e) => setSwaggerUrlInput(e.target.value)}
             placeholder="Backend URL (e.g. http://127.0.0.1:8001)"
-            className="flex-1 min-w-[240px] bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white font-mono"
+            className="w-full flex-1 min-w-0 sm:min-w-[240px] bg-slate-950 border border-slate-700 rounded-lg px-3.5 py-2 text-xs text-white font-mono"
           />
           <button
             type="submit"
             disabled={syncingSwagger}
-            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition disabled:opacity-50"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${syncingSwagger ? 'animate-spin' : ''}`} />
             {syncingSwagger ? 'Connecting...' : 'Connect Project'}
@@ -705,7 +705,7 @@ export const InventoryPage: React.FC = () => {
 
       {/* Sub-Tabs for the Selected Project: Tracked Routes | Shadow Routes | Import OpenAPI */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setTab('routes')}
             className={`px-4 py-2 rounded-lg text-xs font-semibold border transition ${
@@ -761,7 +761,7 @@ export const InventoryPage: React.FC = () => {
                   <option>DELETE</option>
                 </select>
               </div>
-              <div className="flex-1 min-w-[160px]">
+              <div className="flex-1 min-w-0 sm:min-w-[160px] w-full sm:w-auto">
                 <label className="block text-slate-400 mb-1">URL Path Pattern</label>
                 <input
                   type="text"
@@ -770,7 +770,7 @@ export const InventoryPage: React.FC = () => {
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white font-mono"
                 />
               </div>
-              <div className="flex-1 min-w-[180px]">
+              <div className="flex-1 min-w-0 sm:min-w-[180px] w-full sm:w-auto">
                 <label className="block text-slate-400 mb-1">Description</label>
                 <input
                   type="text"
@@ -813,7 +813,8 @@ export const InventoryPage: React.FC = () => {
           )}
 
           <div className="bg-slate-900/90 border border-slate-800 rounded-xl overflow-hidden">
-            <table className="w-full text-left border-collapse text-xs">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left border-collapse text-xs">
               <thead>
                 <tr className="bg-slate-950/80 border-b border-slate-800 text-slate-400 uppercase text-[10px]">
                   <th className="py-3 px-4">Method & Gateway URL</th>
@@ -895,14 +896,15 @@ export const InventoryPage: React.FC = () => {
                 )}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}
 
       {tab === 'shadow' && (
         <div className="bg-slate-900/90 border border-rose-500/30 rounded-xl p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
+          <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2.5 min-w-0">
               <ShieldAlert className="w-5 h-5 text-rose-400" />
               <div>
                 <h3 className="text-sm font-bold text-white">

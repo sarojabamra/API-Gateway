@@ -1,11 +1,11 @@
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import httpx
 from sqlmodel import Session, select
 from app.db import engine
 from app.models import Route, Upstream
-from app.gateway.auth import infer_simulator_subject, mint_demo_jwt, simulator_object_id
+from app.gateway.auth import mint_demo_jwt, resolve_simulator_user_jwt, simulator_object_id
 from app.gateway.pipeline import gateway_state
 from app.gateway.ratelimit import rate_limiter
 
@@ -97,6 +97,7 @@ async def execute_attack_scenario(
     scenario_id: str,
     asgi_app: Any,
     upstream_id: int = 1,
+    auth_token: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes one of the 8 scripted OWASP attack scenarios (or 'all') through /gw/*
@@ -105,7 +106,7 @@ async def execute_attack_scenario(
     if scenario_id == "all":
         combined_steps = []
         for sc in SCENARIO_CATALOG:
-            res = await execute_attack_scenario(sc["id"], asgi_app, upstream_id)
+            res = await execute_attack_scenario(sc["id"], asgi_app, upstream_id, auth_token)
             combined_steps.extend(res["steps"])
         blocked = sum(1 for s in combined_steps if s.get("blocked_by_gateway"))
         return {
@@ -130,15 +131,9 @@ async def execute_attack_scenario(
                 Route.registered == True,
             )
         ).all()
-        subject = infer_simulator_subject(session, upstream_id)
-        user_jwt = mint_demo_jwt(
-            sub=subject,
-            email="alice@sentinel.local",
-            role="user",
-            preset="valid_user",
-            session=session,
-            upstream_id=upstream_id,
-        )["token"]
+        resolved = resolve_simulator_user_jwt(auth_token, session, upstream_id)
+        subject = resolved["subject"]
+        user_jwt = resolved["token"]
         alg_none_jwt = mint_demo_jwt(
             sub=subject, preset="alg_none", session=session, upstream_id=upstream_id
         )["token"]

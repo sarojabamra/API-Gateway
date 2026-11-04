@@ -80,7 +80,7 @@ export const RequestDetailDrawer: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/75 backdrop-blur-sm">
-      <div className="w-full max-w-2xl bg-slate-900 border-l border-slate-800 h-full overflow-y-auto p-6 shadow-2xl">
+      <div className="w-full max-w-2xl bg-slate-900 border-l border-slate-800 h-full overflow-y-auto p-4 sm:p-6 shadow-2xl">
         <div className="flex items-center justify-between pb-4 border-b border-slate-800">
           <div>
             <span className="text-xs font-mono uppercase tracking-wider text-cyan-400">
@@ -120,7 +120,7 @@ export const RequestDetailDrawer: React.FC = () => {
                 <div className="flex items-center gap-2.5">
                   <DecisionBadge decision={detail.decision} />
                   <MethodBadge method={detail.method} />
-                  <span className="font-mono text-sm text-white font-semibold">
+                  <span className="font-mono text-sm text-white font-semibold break-anywhere">
                     {detail.path}
                     {detail.query_params ? `?${detail.query_params}` : ''}
                   </span>

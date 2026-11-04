@@ -44,7 +44,7 @@ export const AnalyticsPage: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-white">
+        <h1 className="text-xl sm:text-2xl font-bold text-white">
           {selectedProjectName || 'Project'} Analytics
         </h1>
         <p className="text-xs text-slate-400 mt-0.5">
@@ -121,7 +121,7 @@ export const AnalyticsPage: React.FC = () => {
           <h3 className="text-sm font-bold text-white mb-1">Busiest Endpoints by Time of Day (IST)</h3>
           <p className="text-xs text-slate-400 mb-4">Number of requests per 4-hour block (Indian Standard Time)</p>
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
+            <table className="w-full min-w-[560px] text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400 font-mono text-[11px]">
                   <th className="py-2 pr-3">API Endpoint</th>

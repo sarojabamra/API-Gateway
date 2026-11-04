@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import json
+import re
 import secrets
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
@@ -7,9 +8,23 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.models import ApiKey, RevokedToken, Upstream, UpstreamJWTConfig, User, to_ist_iso
-from app.schemas import LoginRequest, LoginResponse, TokenMintRequest, TokenTestRequest, UserOut
-from app.api.v1.deps import create_dashboard_token, get_current_user, require_roles, verify_password
+from app.models import ApiKey, Organization, RevokedToken, Upstream, UpstreamJWTConfig, User, to_ist_iso
+from app.schemas import (
+    LoginRequest,
+    LoginResponse,
+    OrganizationOut,
+    RegisterRequest,
+    TokenMintRequest,
+    TokenTestRequest,
+    UserOut,
+)
+from app.api.v1.deps import (
+    create_dashboard_token,
+    get_current_user,
+    hash_password,
+    require_roles,
+    verify_password,
+)
 from app.gateway.auth import (
     get_upstream_jwt_config,
     hash_api_key,
@@ -18,12 +33,74 @@ from app.gateway.auth import (
     validate_jwt_checklist,
 )
 
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+SLUG_RE = re.compile(r"[^a-z0-9]+")
+
 router = APIRouter(prefix="/auth", tags=["Authentication & JWT Security Settings"])
+
+
+def _slugify(value: str) -> str:
+    slug = SLUG_RE.sub("-", (value or "").strip().lower()).strip("-")
+    return slug[:64] or "organization"
+
+
+def _unique_org_slug(session: Session, base_name: str) -> str:
+    base = _slugify(base_name)
+    candidate = base
+    suffix = 2
+    while session.exec(select(Organization).where(Organization.slug == candidate)).first():
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _user_out(user: User, session: Optional[Session] = None) -> UserOut:
+    org_name = None
+    org_slug = None
+    if user.organization_id and session is not None:
+        org = session.get(Organization, user.organization_id)
+        if org:
+            org_name = org.name
+            org_slug = org.slug
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        full_name=user.full_name,
+        role=user.role,
+        is_active=user.is_active,
+        organization_id=user.organization_id,
+        organization_name=org_name,
+        organization_slug=org_slug,
+    )
+
+
+def _issue_session(user: User, session: Session) -> LoginResponse:
+    return LoginResponse(access_token=create_dashboard_token(user), user=_user_out(user, session))
+
+
+def _normalize_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def _validate_credentials(email: str, full_name: str, password: str) -> None:
+    if not EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="Enter a valid email address")
+    if len(full_name.strip()) < 2:
+        raise HTTPException(status_code=400, detail="Enter your full name")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+
+
+@router.get("/organizations", response_model=List[OrganizationOut])
+def list_organizations_for_registration(session: Session = Depends(get_session)):
+    orgs = session.exec(select(Organization).order_by(Organization.name)).all()
+    return [OrganizationOut(id=o.id, name=o.name, slug=o.slug) for o in orgs]
 
 
 @router.post("/login", response_model=LoginResponse)
 def login_dashboard(payload: LoginRequest, session: Session = Depends(get_session)):
-    user = session.exec(select(User).where(User.email == payload.email.strip().lower())).first()
+    email = _normalize_email(payload.email)
+    user = session.exec(select(User).where(User.email == email)).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
@@ -33,60 +110,64 @@ def login_dashboard(payload: LoginRequest, session: Session = Depends(get_sessio
     session.add(user)
     session.commit()
     session.refresh(user)
+    return _issue_session(user, session)
 
-    token = create_dashboard_token(user)
-    return LoginResponse(
-        access_token=token,
-        user=UserOut(
-            id=user.id,
-            email=user.email,
-            full_name=user.full_name,
-            role=user.role,
-            is_active=user.is_active,
-        ),
+
+@router.post("/register", response_model=LoginResponse)
+def register_dashboard(payload: RegisterRequest, session: Session = Depends(get_session)):
+    email = _normalize_email(payload.email)
+    full_name = (payload.full_name or "").strip()
+    _validate_credentials(email, full_name, payload.password)
+
+    existing = session.exec(select(User).where(User.email == email)).first()
+    if existing:
+        raise HTTPException(status_code=409, detail="An account with this email already exists")
+
+    mode = (payload.organization_mode or "create").strip().lower()
+    if mode not in ("create", "join"):
+        raise HTTPException(status_code=400, detail="Choose whether to create or join an organization")
+
+    if mode == "create":
+        org_name = (payload.organization_name or "").strip()
+        if len(org_name) < 2:
+            raise HTTPException(status_code=400, detail="Enter an organization name")
+        org = Organization(name=org_name, slug=_unique_org_slug(session, org_name))
+        session.add(org)
+        session.commit()
+        session.refresh(org)
+        role = "admin"
+        organization_id = org.id
+    else:
+        if not payload.organization_id:
+            raise HTTPException(status_code=400, detail="Select an organization to join")
+        org = session.get(Organization, payload.organization_id)
+        if not org:
+            raise HTTPException(status_code=404, detail="Organization not found")
+        role = "viewer"
+        organization_id = org.id
+
+    user = User(
+        email=email,
+        full_name=full_name,
+        password_hash=hash_password(payload.password),
+        role=role,
+        organization_id=organization_id,
+        is_active=True,
+        last_login_at=datetime.now(timezone.utc),
     )
-
-
-class QuickSwitchBody(BaseModel):
-    role: str
-
-
-@router.post("/quick-switch", response_model=LoginResponse)
-def quick_switch_post(payload: QuickSwitchBody, session: Session = Depends(get_session)):
-    user = session.exec(select(User).where(User.role == payload.role)).first()
-    if not user:
-        raise HTTPException(status_code=404, detail=f"No demo user found for role '{payload.role}'")
-    token = create_dashboard_token(user)
-    return LoginResponse(
-        access_token=token,
-        user=UserOut(
-            id=user.id,
-            email=user.email,
-            full_name=user.full_name,
-            role=user.role,
-            is_active=user.is_active,
-        ),
-    )
-
-
-@router.post("/quick-role-switch/{role}", response_model=LoginResponse)
-def quick_role_switch(role: str, session: Session = Depends(get_session)):
-    return quick_switch_post(QuickSwitchBody(role=role), session)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return _issue_session(user, session)
 
 
 @router.get("/me", response_model=UserOut)
-def get_me(user: User = Depends(get_current_user)):
-    return UserOut(
-        id=user.id,
-        email=user.email,
-        full_name=user.full_name,
-        role=user.role,
-        is_active=user.is_active,
-    )
+def get_me(user: User = Depends(get_current_user), session: Session = Depends(get_session)):
+    return _user_out(user, session)
 
 
 @router.get("/jwt-config")
-def get_jwt_config():
+def get_jwt_config(_user: User = Depends(get_current_user)):
     return {
         "allowed_algorithms": jwt_runtime_config.allowed_algorithms,
         "issuer": jwt_runtime_config.issuer,
@@ -112,6 +193,7 @@ class UpstreamJWTConfigInput(BaseModel):
 def get_project_jwt_config(
     upstream_id: int,
     session: Session = Depends(get_session),
+    _user: User = Depends(get_current_user),
 ):
     upstream = session.get(Upstream, upstream_id)
     if not upstream:
@@ -177,7 +259,7 @@ def update_project_jwt_config(
     session.add(config)
     session.commit()
     session.refresh(config)
-    return get_project_jwt_config(upstream_id, session)
+    return get_project_jwt_config(upstream_id, session, _user)
 
 
 class JwtTestUnifiedInput(BaseModel):
@@ -188,7 +270,11 @@ class JwtTestUnifiedInput(BaseModel):
 
 
 @router.post("/jwt-test")
-def test_or_mint_jwt(payload: JwtTestUnifiedInput, session: Session = Depends(get_session)):
+def test_or_mint_jwt(
+    payload: JwtTestUnifiedInput,
+    session: Session = Depends(get_session),
+    _user: User = Depends(get_current_user),
+):
     if payload.preset:
         preset_aliases = {
             "valid_customer": "valid_user",
@@ -215,7 +301,11 @@ def test_or_mint_jwt(payload: JwtTestUnifiedInput, session: Session = Depends(ge
 
 
 @router.post("/token-test")
-def test_jwt_token(payload: TokenTestRequest, session: Session = Depends(get_session)):
+def test_jwt_token(
+    payload: TokenTestRequest,
+    session: Session = Depends(get_session),
+    _user: User = Depends(get_current_user),
+):
     return validate_jwt_checklist(
         token=payload.token,
         session=session,
@@ -230,7 +320,11 @@ def test_jwt_token(payload: TokenTestRequest, session: Session = Depends(get_ses
 
 
 @router.post("/token-mint")
-def mint_jwt_for_testing(payload: TokenMintRequest, session: Session = Depends(get_session)):
+def mint_jwt_for_testing(
+    payload: TokenMintRequest,
+    session: Session = Depends(get_session),
+    _user: User = Depends(get_current_user),
+):
     minted = mint_demo_jwt(
         sub=payload.sub,
         email=payload.email,
@@ -247,7 +341,10 @@ def mint_jwt_for_testing(payload: TokenMintRequest, session: Session = Depends(g
 
 
 @router.get("/api-keys")
-def list_api_keys(session: Session = Depends(get_session)):
+def list_api_keys(
+    session: Session = Depends(get_session),
+    _user: User = Depends(get_current_user),
+):
     keys = session.exec(select(ApiKey).order_by(ApiKey.created_at.desc())).all()
     return [
         {
@@ -266,7 +363,10 @@ def list_api_keys(session: Session = Depends(get_session)):
 
 
 @router.get("/revoked-tokens")
-def list_revoked_tokens(session: Session = Depends(get_session)):
+def list_revoked_tokens(
+    session: Session = Depends(get_session),
+    _user: User = Depends(get_current_user),
+):
     tokens = session.exec(select(RevokedToken).order_by(RevokedToken.revoked_at.desc())).all()
     return [
         {

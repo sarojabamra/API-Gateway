@@ -61,7 +61,7 @@ Follow this exact sequence to experience the full closed-loop lifecycle (**Unpro
    - Toggle any policy between **Enforce (Block)** and **Monitor (Log Only / Dry-Run)**.
    - Click **New Policy** to author a custom OWASP rule mapped to `API1:2023`–`API9:2023`.
 2. **Tune Rate Limits & Verify with Burst Tester (`/rate-limits`)**
-   - Inspect per-route **Sliding Window Counter** and **Token Bucket** configurations.
+   - Inspect per-route **fixed-window** and **token bucket** limits. Counters are stored in Redis when `REDIS_URL` is set.
    - Select a route and fire a **25-Request Instant Burst** in the **Interactive Burst Tester** to verify exact `200 OK` vs `429 Too Many Requests` cutoffs and `Retry-After` headers.
 3. **Configure Global Auto-Blocking (`/blocklist`)**
    - Toggle **Auto-Block Critical Alerts** ON so that any client triggering a Critical alert (`score >= 80`) is automatically quarantined.

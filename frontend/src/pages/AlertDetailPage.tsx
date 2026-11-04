@@ -70,28 +70,28 @@ export const AlertDetailPage: React.FC = () => {
     <div className="space-y-6">
       {/* Top Bar */}
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
+        <div className="flex items-start sm:items-center gap-3 min-w-0">
           <button
             onClick={() => navigate('/alerts')}
-            className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-white"
+            className="p-2 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-white shrink-0"
           >
             <ArrowLeft className="w-4 h-4" />
           </button>
-          <div>
-            <div className="flex items-center gap-2.5">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2.5 flex-wrap">
               <SeverityBadge severity={alert.severity} />
               <OwaspBadge owaspId={alert.owasp_id} />
               <span className="text-xs font-mono text-slate-400">
                 Incident #{alert.id} · {alert.event_count} correlated events
               </span>
             </div>
-            <h1 className="text-xl font-bold text-white mt-1">{alert.title}</h1>
+            <h1 className="text-lg sm:text-xl font-bold text-white mt-1 break-anywhere">{alert.title}</h1>
           </div>
         </div>
 
         {/* Status Workflow Selector */}
         {canMutate(['admin', 'analyst']) && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             {(['open', 'investigating', 'resolved', 'false_positive'] as const).map((st) => (
               <button
                 key={st}
@@ -114,8 +114,8 @@ export const AlertDetailPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         {/* Incident Analysis Panel */}
         <div className="lg:col-span-8 bg-slate-900/90 border border-slate-800 rounded-xl p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
+          <div className="flex items-start sm:items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
               <div className="p-2 rounded-lg bg-indigo-500/15 border border-indigo-500/30 text-indigo-300">
                 <Sparkles className="w-4 h-4" />
               </div>
@@ -362,7 +362,7 @@ export const AlertDetailPage: React.FC = () => {
                 runAction({ action: 'add_note', note: noteText.trim() }, 'Added investigation note');
                 setNoteText('');
               }}
-              className="mt-4 flex gap-2"
+              className="mt-4 flex flex-col sm:flex-row gap-2"
             >
               <input
                 type="text"

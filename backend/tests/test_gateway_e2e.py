@@ -1,3 +1,4 @@
+import uuid
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -9,14 +10,97 @@ def test_end_to_end_gateway_and_control_plane():
         assert r.status_code == 200
         assert r.json()["status"] == "healthy"
 
-        # 2. Quick login for all 4 RBAC roles
-        for role in ["admin", "analyst", "developer", "viewer"]:
-            login_res = client.post("/api/v1/auth/quick-switch", json={"role": role})
-            assert login_res.status_code == 200
-            assert login_res.json()["user"]["role"] == role
+        # 2. Unauthenticated control-plane calls are rejected
+        assert client.get("/api/v1/overview").status_code == 401
+        assert client.post("/api/v1/auth/quick-switch", json={"role": "admin"}).status_code == 404
 
-        admin_token = client.post("/api/v1/auth/quick-switch", json={"role": "admin"}).json()["access_token"]
+        # 3. Seeded users sign in with email/password and belong to Sentinel Demo org
+        seeded = {
+            "admin": "admin@sentinel.local",
+            "analyst": "analyst@sentinel.local",
+            "developer": "dev@sentinel.local",
+            "viewer": "viewer@sentinel.local",
+        }
+        for role, email in seeded.items():
+            login_res = client.post(
+                "/api/v1/auth/login",
+                json={"email": email, "password": "sentinel123"},
+            )
+            assert login_res.status_code == 200
+            body = login_res.json()["user"]
+            assert body["role"] == role
+            assert body["organization_slug"] == "sentinel-demo"
+
+        orgs = client.get("/api/v1/auth/organizations")
+        assert orgs.status_code == 200
+        demo_org = next(o for o in orgs.json() if o["slug"] == "sentinel-demo")
+
+        # Join existing org as viewer
+        register_email = f"jordan-{uuid.uuid4().hex[:8]}@example.com"
+        register_res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": register_email,
+                "full_name": "Jordan Hayes",
+                "password": "password123",
+                "organization_mode": "join",
+                "organization_id": demo_org["id"],
+            },
+        )
+        assert register_res.status_code == 200
+        assert register_res.json()["user"]["role"] == "viewer"
+        assert register_res.json()["user"]["organization_id"] == demo_org["id"]
+
+        duplicate = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": register_email,
+                "full_name": "Jordan Hayes",
+                "password": "password123",
+                "organization_mode": "join",
+                "organization_id": demo_org["id"],
+            },
+        )
+        assert duplicate.status_code == 409
+
+        # Create a separate organization as its admin
+        create_email = f"founder-{uuid.uuid4().hex[:8]}@example.com"
+        create_res = client.post(
+            "/api/v1/auth/register",
+            json={
+                "email": create_email,
+                "full_name": "Org Founder",
+                "password": "password123",
+                "organization_mode": "create",
+                "organization_name": f"Acme {uuid.uuid4().hex[:6]}",
+            },
+        )
+        assert create_res.status_code == 200
+        assert create_res.json()["user"]["role"] == "admin"
+        assert create_res.json()["user"]["organization_id"] != demo_org["id"]
+
+        admin_token = client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@sentinel.local", "password": "sentinel123"},
+        ).json()["access_token"]
         headers = {"Authorization": f"Bearer {admin_token}"}
+
+        # Same-org admin can promote joiners
+        promoted = client.patch(
+            f"/api/v1/settings/users/{register_res.json()['user']['id']}",
+            json={"role": "analyst", "is_active": True},
+            headers=headers,
+        )
+        assert promoted.status_code == 200
+        assert promoted.json()["role"] == "analyst"
+
+        # Cross-org role changes are forbidden
+        blocked = client.patch(
+            f"/api/v1/settings/users/{create_res.json()['user']['id']}",
+            json={"role": "viewer", "is_active": True},
+            headers=headers,
+        )
+        assert blocked.status_code == 403
 
         # 3. Verify Overview KPIs and OWASP Top 10 coverage
         ov = client.get("/api/v1/overview?time_range=24h", headers=headers)
@@ -39,6 +123,22 @@ def test_end_to_end_gateway_and_control_plane():
 
         # 5. Test Gateway Enforcement ON vs OFF via Attack Simulator
         client.post("/api/v1/simulator/gateway-toggle", json={"gateway_enabled": True}, headers=headers)
+
+        invalid_jwt = client.post(
+            "/api/v1/simulator/validate-token",
+            json={"token": "not-a-jwt", "upstream_id": 1},
+            headers=headers,
+        )
+        assert invalid_jwt.status_code == 400
+        assert "Invalid JWT" in invalid_jwt.json()["detail"]
+
+        rejected_run = client.post(
+            "/api/v1/simulator/run",
+            json={"scenario_id": "bola_enum", "auth_token": "not-a-jwt"},
+            headers=headers,
+        )
+        assert rejected_run.status_code == 400
+        assert "Invalid JWT" in rejected_run.json()["detail"]
 
         # BOLA blocked when Gateway ON
         bola_on = client.post("/api/v1/simulator/run", json={"scenario_id": "bola_enum"}, headers=headers)

@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlmodel import Session, select
 from app.models import Policy, Route
 from app.demo_api.vulnshop import VULNSHOP_ORDERS
+from app.runtime_cache import runtime_cache
 
 PUBLIC_AUTH_PATHS = (
     "/auth/login",
@@ -96,9 +97,13 @@ def find_matching_route(
     Finds a registered Route matching (upstream_id, method, path).
     Prefers exact path matches (e.g., '/users/me') before parameterized matches ('/users/{id}').
     """
-    routes = session.exec(
-        select(Route).where(Route.upstream_id == upstream_id, Route.registered == True)
-    ).all()
+    cache_key = f"routes:{upstream_id}:registered"
+    routes = runtime_cache.get(cache_key)
+    if routes is None:
+        routes = session.exec(
+            select(Route).where(Route.upstream_id == upstream_id, Route.registered == True)
+        ).all()
+        runtime_cache.set(cache_key, routes)
 
     # Sort routes so static paths come before parameterized paths
     sorted_routes = sorted(routes, key=lambda r: ("{" in r.path_pattern, -len(r.path_pattern)))
@@ -118,10 +123,14 @@ def check_policy_mode(session: Session, policy_type: str, owasp_id: Optional[str
     Checks if a given policy type or OWASP ID is enabled and whether it is in 'enforce' or 'monitor' mode.
     Returns (is_enabled, mode, policy_id).
     """
-    stmt = select(Policy).where(Policy.type == policy_type)
-    policies = session.exec(stmt).all()
+    all_policies = runtime_cache.get("policies:all")
+    if all_policies is None:
+        all_policies = session.exec(select(Policy)).all()
+        runtime_cache.set("policies:all", all_policies)
+
+    policies = [pol for pol in all_policies if pol.type == policy_type]
     if not policies and owasp_id:
-        policies = session.exec(select(Policy).where(Policy.owasp_id == owasp_id)).all()
+        policies = [pol for pol in all_policies if pol.owasp_id == owasp_id]
 
     if not policies:
         return True, "enforce", None

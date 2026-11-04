@@ -21,10 +21,15 @@ def get_deep_analytics(
     upstream_id: int = Query(1),
     session: Session = Depends(get_session),
 ):
+    now = datetime.now(timezone.utc)
     logs = session.exec(
         select(RequestLog)
-        .where(RequestLog.upstream_id == upstream_id)
+        .where(
+            RequestLog.upstream_id == upstream_id,
+            RequestLog.ts >= now - timedelta(hours=24),
+        )
         .order_by(RequestLog.ts.asc())
+        .limit(50000)
     ).all()
     baselines = session.exec(select(ClientBaseline).order_by(ClientBaseline.last_zscore.desc())).all()
     project_clients = {
@@ -32,7 +37,6 @@ def get_deep_analytics(
         for log in logs
     }
 
-    now = datetime.now(timezone.utc)
     # 1. Latency Percentiles (p50, p95, p99) over 12 time buckets
     bucket_count = 12
     bucket_sec = 7200  # 2h buckets across 24h

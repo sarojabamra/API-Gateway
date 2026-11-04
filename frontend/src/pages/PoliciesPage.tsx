@@ -102,7 +102,7 @@ export const PoliciesPage: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Security Policy Engine & Dry-Run Controls</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-white">Security Policy Engine & Dry-Run Controls</h1>
           <p className="text-xs text-slate-400 mt-0.5">
             Configure OWASP API Top 10 enforcement rules. Switch any policy between <strong>Enforce (Block)</strong> and <strong>Monitor (Dry-Run Log Only)</strong> to eliminate false positives safely.
           </p>
@@ -171,9 +171,9 @@ export const PoliciesPage: React.FC = () => {
               </div>
 
               {/* Enforce vs Monitor (Dry-Run) Mode Selector */}
-              <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between">
+              <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <span className="text-xs text-slate-400">Enforcement Mode:</span>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
                     disabled={!canMutate(['admin', 'analyst', 'developer'])}
                     onClick={() => handleToggleMode(pol, 'enforce')}
@@ -208,7 +208,7 @@ export const PoliciesPage: React.FC = () => {
       {/* Create Policy Modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-4 sm:p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-3 border-b border-slate-800">
               <h3 className="text-base font-bold text-white">Create Custom Security Policy</h3>
               <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-white">
@@ -238,7 +238,7 @@ export const PoliciesPage: React.FC = () => {
                   className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-white"
                 />
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-slate-300 mb-1">Policy Type</label>
                   <select

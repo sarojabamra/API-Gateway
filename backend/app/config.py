@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "production-demo"
     DATABASE_URL: str = "sqlite:///./sentinel_gateway.db"
     REDIS_URL: Optional[str] = None
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 40
+    CACHE_TTL_SECONDS: float = 2.0
+    GATEWAY_ENABLED_BY_DEFAULT: bool = True
 
     # Dashboard Admin/User Auth JWT
     DASHBOARD_JWT_SECRET: str = "sentinel-dashboard-super-secret-key-2026-x99"

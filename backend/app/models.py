@@ -22,6 +22,14 @@ def to_ist_iso(dt: Optional[datetime]) -> Optional[str]:
     return ist_dt.isoformat() if ist_dt is not None else None
 
 
+class Organization(SQLModel, table=True):
+    __tablename__ = "organizations"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(index=True)
+    slug: str = Field(index=True, unique=True)
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class User(SQLModel, table=True):
     __tablename__ = "users"
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -29,6 +37,7 @@ class User(SQLModel, table=True):
     full_name: str
     password_hash: str
     role: str = Field(default="viewer", index=True)  # admin, analyst, developer, viewer
+    organization_id: Optional[int] = Field(default=None, index=True, foreign_key="organizations.id")
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
     last_login_at: Optional[datetime] = Field(default=None)

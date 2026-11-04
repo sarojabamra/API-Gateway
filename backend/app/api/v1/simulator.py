@@ -4,9 +4,10 @@ from app.db import get_session
 from app.models import Upstream
 from pydantic import BaseModel
 from app.models import User
-from app.schemas import SimulatorRunRequest
+from app.schemas import SimulatorRunRequest, SimulatorTokenValidateRequest
 from app.api.v1.deps import require_roles
 from app.attack_sim.scenarios import SCENARIO_CATALOG, execute_attack_scenario
+from app.gateway.auth import resolve_simulator_user_jwt
 from app.gateway.pipeline import gateway_state
 
 router = APIRouter(prefix="/simulator", tags=["Attack Simulator & Gateway Mode Switch"])
@@ -47,10 +48,39 @@ def toggle_gateway_protection(
     }
 
 
+@router.post("/validate-token")
+def validate_simulator_token(
+    payload: SimulatorTokenValidateRequest,
+    session: Session = Depends(get_session),
+    _user: User = Depends(require_roles(["admin", "analyst", "developer"])),
+):
+    if not (payload.token or "").strip():
+        raise HTTPException(status_code=400, detail="Invalid JWT: token is empty")
+    try:
+        resolved = resolve_simulator_user_jwt(payload.token, session, payload.upstream_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "valid": True,
+        "source": resolved["source"],
+        "subject": resolved["subject"],
+        "header": resolved["header"],
+        "payload": resolved["payload"],
+    }
+
+
 @router.post("/run")
 async def run_attack_simulation(
     payload: SimulatorRunRequest,
     request: Request,
     _user: User = Depends(require_roles(["admin", "analyst", "developer"])),
 ):
-    return await execute_attack_scenario(payload.scenario_id, request.app, payload.upstream_id)
+    try:
+        return await execute_attack_scenario(
+            payload.scenario_id,
+            request.app,
+            payload.upstream_id,
+            payload.auth_token,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

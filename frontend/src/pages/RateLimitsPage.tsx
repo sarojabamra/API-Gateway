@@ -88,11 +88,12 @@ export const RateLimitsPage: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">
+          <h1 className="text-xl sm:text-2xl font-bold text-white">
             {selectedProjectName || 'Project'} Rate Limits & Velocity Tests
           </h1>
           <p className="text-xs text-slate-400 mt-0.5">
-            Hybrid <strong>Sliding Window Counter</strong> (sustained RPM) + <strong>Token Bucket</strong> (burst capacity) for OWASP API4 & API6 protection.
+            <strong>Fixed-window counter</strong> (sustained RPM) and <strong>token bucket</strong> (burst capacity) in the{' '}
+            <strong>{data?.backend_engine === 'redis' ? 'Redis' : 'in-memory'}</strong> store, for OWASP API4 and API6.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
@@ -161,14 +162,14 @@ export const RateLimitsPage: React.FC = () => {
 
           {burstResult && (
             <div className="space-y-3 pt-2">
-              <div className="flex items-center justify-between text-xs bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono">
-                <span>Target: {burstResult.target}</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs bg-slate-950 p-3 rounded-lg border border-slate-800 font-mono">
+                <span className="break-anywhere">Target: {burstResult.target}</span>
                 <span className="text-emerald-400">200 Allowed: {burstResult.allowed_count}</span>
                 <span className="text-rose-400 font-bold">
                   429 Throttled: {burstResult.throttled_429_count}
                 </span>
               </div>
-              <div className="max-h-56 overflow-y-auto border border-slate-800 rounded-lg">
+              <div className="max-h-56 overflow-auto border border-slate-800 rounded-lg">
                 <table className="w-full text-left border-collapse text-xs font-mono">
                   <thead>
                     <tr className="bg-slate-950 border-b border-slate-800 text-slate-400 text-[10px]">
@@ -204,7 +205,7 @@ export const RateLimitsPage: React.FC = () => {
         {/* Live Client Usage Meters */}
         <div className="lg:col-span-5 bg-slate-900/90 border border-slate-800 rounded-xl p-5">
           <h3 className="text-sm font-bold text-white mb-1">Active Client Bucket Usage Meters</h3>
-          <p className="text-xs text-slate-400 mb-4">Real-time sliding window & token bucket state</p>
+          <p className="text-xs text-slate-400 mb-4">Live fixed-window usage and token bucket state</p>
           <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
             {(data?.active_meters || []).length === 0 ? (
               <div className="text-xs text-slate-500 py-8 text-center">
@@ -214,7 +215,7 @@ export const RateLimitsPage: React.FC = () => {
               (data?.active_meters || []).map((m: any) => (
                 <div key={m.key} className="p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs">
                   <div className="flex items-center justify-between font-mono text-[11px] mb-1.5">
-                    <span className="text-slate-200 truncate max-w-[230px]">{m.key}</span>
+                    <span className="text-slate-200 truncate min-w-0">{m.key}</span>
                     <span className="text-cyan-400">
                       {m.current_rpm}/{m.limit_rpm} RPM ({m.utilization_pct}%)
                     </span>
@@ -251,7 +252,7 @@ export const RateLimitsPage: React.FC = () => {
           Sensitive business flows (`API6`) enforce tighter token bucket limits than standard read routes (`API4`).
         </p>
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
+          <table className="w-full min-w-[720px] text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-slate-800 text-slate-400 uppercase text-[10px]">
                 <th className="py-2 pr-3">Route</th>

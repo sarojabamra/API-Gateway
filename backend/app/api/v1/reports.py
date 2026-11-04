@@ -1,6 +1,6 @@
 from collections import Counter
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import io
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -16,8 +16,19 @@ def generate_executive_report(
     time_range: str = Query("24h"),
     session: Session = Depends(get_session),
 ):
-    logs = session.exec(select(RequestLog).order_by(RequestLog.ts.desc())).all()
-    alerts = session.exec(select(Alert).order_by(Alert.ts.desc())).all()
+    window = {
+        "15m": timedelta(minutes=15),
+        "1h": timedelta(hours=1),
+        "24h": timedelta(hours=24),
+        "7d": timedelta(days=7),
+    }.get(time_range, timedelta(hours=24))
+    cutoff = datetime.now(timezone.utc) - window
+    logs = session.exec(
+        select(RequestLog).where(RequestLog.ts >= cutoff).order_by(RequestLog.ts.desc()).limit(20000)
+    ).all()
+    alerts = session.exec(
+        select(Alert).where(Alert.ts >= cutoff).order_by(Alert.ts.desc()).limit(5000)
+    ).all()
     policies = session.exec(select(Policy)).all()
     routes = session.exec(select(Route)).all()
     blocks = session.exec(select(BlocklistEntry).where(BlocklistEntry.active == True)).all()

@@ -1,11 +1,17 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.config import settings
-from app.db import create_db_and_tables, engine
+from app.db import check_database, create_db_and_tables, engine
+from app.gateway.http_client import close_http_client
+from app.gateway.ratelimit import rate_limiter
+from app.gateway.redis_client import redis_handle
 from app.seed import backfill_route_security_defaults, seed_all_data
+import app.models  # noqa: F401 — register SQLModel tables before create_all
+import app.runtime_cache  # noqa: F401 — register shared-cache invalidation listeners
 
 from app.demo_api.vulnshop import router as vulnshop_router
 from app.gateway.proxy import router as gateway_proxy_router
@@ -23,15 +29,24 @@ from app.api.v1.simulator import router as simulator_router
 from app.api.v1.reports import router as reports_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.ws import router as ws_router
+from app.api.v1.deps import get_current_user
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from app.api.v1.ws import ws_manager
+
     create_db_and_tables()
     with Session(engine) as session:
-        seed_all_data(session, force_reset=False)
-        backfill_route_security_defaults(session)
+        try:
+            seed_all_data(session, force_reset=False)
+            backfill_route_security_defaults(session)
+        except IntegrityError:
+            session.rollback()
+    await ws_manager.start()
     yield
+    await ws_manager.stop()
+    await close_http_client()
 
 
 app = FastAPI(
@@ -63,19 +78,20 @@ app.add_middleware(
 app.include_router(vulnshop_router, prefix="/demo")
 
 # 2. Mount Management Control Plane REST API at /api/v1/*
+control_plane_auth = [Depends(get_current_user)]
 app.include_router(auth_router, prefix="/api/v1")
-app.include_router(overview_router, prefix="/api/v1")
-app.include_router(traffic_router, prefix="/api/v1")
-app.include_router(alerts_router, prefix="/api/v1")
-app.include_router(policies_router, prefix="/api/v1")
-app.include_router(ratelimits_router, prefix="/api/v1")
-app.include_router(routes_router, prefix="/api/v1")
-app.include_router(blocklist_router, prefix="/api/v1")
-app.include_router(analytics_router, prefix="/api/v1")
-app.include_router(owasp_router, prefix="/api/v1")
-app.include_router(simulator_router, prefix="/api/v1")
-app.include_router(reports_router, prefix="/api/v1")
-app.include_router(settings_router, prefix="/api/v1")
+app.include_router(overview_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(traffic_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(alerts_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(policies_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(ratelimits_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(routes_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(blocklist_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(analytics_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(owasp_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(simulator_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(reports_router, prefix="/api/v1", dependencies=control_plane_auth)
+app.include_router(settings_router, prefix="/api/v1", dependencies=control_plane_auth)
 
 # 3. Mount WebSocket Realtime Hub at /ws/live
 app.include_router(ws_router)
@@ -86,4 +102,14 @@ app.include_router(gateway_proxy_router)
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "service": settings.APP_NAME}
+    db_ok = check_database()
+    redis_configured = bool((settings.REDIS_URL or "").strip())
+    redis_ok = redis_handle.get() is not None
+    status = "healthy" if db_ok else "degraded"
+    return {
+        "status": status,
+        "service": settings.APP_NAME,
+        "database": "up" if db_ok else "down",
+        "redis": "up" if redis_ok else ("configured" if redis_configured else "disabled"),
+        "rate_limit_backend": rate_limiter.backend_type,
+    }

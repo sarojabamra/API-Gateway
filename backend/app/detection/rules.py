@@ -1,20 +1,18 @@
 import json
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
+
+from redis.exceptions import RedisError
+
+from app.gateway.redis_client import redis_handle
 from app.models import RequestLog
 
 
 class BehavioralTracker:
     """
-    In-memory sliding-window behavioral state tracker for multi-event OWASP correlation rules:
-    - Brute force login (5+ 401s on /auth/login in 60s -> API2 High)
-    - Credential stuffing (8+ distinct usernames from one IP in 300s -> API2 High)
-    - BOLA ID enumeration (8+ distinct object IDs on /users/{id} or /orders/{id} in 60s -> API1 High)
-    - BFLA privilege escalation probe (2+ non-admin hits on /admin/* -> API5 High)
-    - Rate abuse (5+ 429s in 300s -> API4 Medium)
-    - Sensitive business flow velocity (/coupons/redeem or /orders burst -> API6 High)
-    - Shadow endpoint scan (3+ hits on unregistered paths -> API9 Medium/High)
-    - Error spike (high 4xx/5xx ratio -> API8 Medium)
+    Sliding-window behavioral state tracker for multi-event OWASP correlation rules.
+    Windows live in Redis so every gateway worker sees the same client history.
+    Process memory is used only when Redis is unavailable.
     """
 
     def __init__(self):
@@ -32,6 +30,71 @@ class BehavioralTracker:
 
     def _prune_dict(self, d: Dict[str, float], window_sec: float, now: float) -> Dict[str, float]:
         return {k: t for k, t in d.items() if now - t <= window_sec}
+
+    def _redis_zadd_now(self, key: str, now: float, window_sec: float) -> Optional[int]:
+        client = redis_handle.get()
+        if client is None:
+            return None
+        try:
+            pipe = client.pipeline()
+            pipe.zadd(key, {f"{now:.6f}": now})
+            pipe.zremrangebyscore(key, 0, now - window_sec)
+            pipe.zcard(key)
+            pipe.expire(key, int(window_sec) + 60)
+            _, _, count, _ = pipe.execute()
+            return int(count)
+        except RedisError:
+            redis_handle.mark_down()
+            return None
+
+    def _redis_zadd_member(self, key: str, member: str, now: float, window_sec: float) -> Optional[int]:
+        client = redis_handle.get()
+        if client is None:
+            return None
+        try:
+            pipe = client.pipeline()
+            pipe.zadd(key, {member: now})
+            pipe.zremrangebyscore(key, 0, now - window_sec)
+            pipe.zcard(key)
+            pipe.expire(key, int(window_sec) + 60)
+            _, _, count, _ = pipe.execute()
+            return int(count)
+        except RedisError:
+            redis_handle.mark_down()
+            return None
+
+    def _count_event(
+        self,
+        store: Dict[str, List[float]],
+        mem_key: str,
+        redis_key: str,
+        now: float,
+        window_sec: float,
+    ) -> int:
+        count = self._redis_zadd_now(redis_key, now, window_sec)
+        if count is not None:
+            return count
+        hits = self._prune_ts(store.get(mem_key, []), window_sec, now)
+        hits.append(now)
+        store[mem_key] = hits
+        return len(hits)
+
+    def _count_member(
+        self,
+        store: Dict[str, Dict[str, float]],
+        mem_key: str,
+        redis_key: str,
+        member: str,
+        now: float,
+        window_sec: float,
+    ) -> int:
+        count = self._redis_zadd_member(redis_key, member, now, window_sec)
+        if count is not None:
+            return count
+        mapping = self._prune_dict(store.get(mem_key, {}), window_sec, now)
+        mapping[member] = now
+        store[mem_key] = mapping
+        return len(mapping)
 
     def evaluate(self, log: RequestLog, anomaly_zscore: float = 0.0) -> List[Dict[str, Any]]:
         now = time.time()
@@ -54,50 +117,55 @@ class BehavioralTracker:
 
         # 2. Expired or Revoked Token Reuse (API2 - Medium/High)
         if any(code in reason for code in ("jwt_revoked", "jwt_expired")):
-            hits = self._prune_ts(self.revoked_token_hits.get(scope_key, []), 300, now)
-            hits.append(now)
-            self.revoked_token_hits[scope_key] = hits
+            hits = self._count_event(
+                self.revoked_token_hits, scope_key, f"sgw:behav:revoked:{scope_key}", now, 300
+            )
             triggered.append({
                 "type": "token_reuse",
                 "owasp_id": "API2",
                 "severity": "high" if "jwt_revoked" in reason else "medium",
-                "title": f"Compromised / Expired JWT Reuse Attempt ({len(hits)}x)",
+                "title": f"Compromised / Expired JWT Reuse Attempt ({hits}x)",
                 "description": f"Repeated attempts to authenticate with a revoked or expired token from {ip}. Reason: {reason}",
             })
 
         # 3. Brute Force Login & Credential Stuffing (API2 - High)
         if log.status_code == 401 or path.endswith("/auth/login") or "login" in path.lower():
             if log.status_code == 401 or "invalid" in reason.lower() or "brute" in reason.lower():
-                fails = self._prune_ts(self.login_failures.get(scope_key, []), 60, now)
-                fails.append(now)
-                self.login_failures[scope_key] = fails
+                fails = self._count_event(
+                    self.login_failures, scope_key, f"sgw:behav:loginfail:{scope_key}", now, 60
+                )
 
                 if log.request_body_preview:
                     try:
                         body = json.loads(log.request_body_preview)
                         uname = str(body.get("username") or body.get("email") or body.get("user") or "")
                         if uname:
-                            u_map = self._prune_dict(self.login_usernames.get(scope_key, {}), 300, now)
-                            u_map[uname] = now
-                            self.login_usernames[scope_key] = u_map
-                            if len(u_map) >= 5:
+                            distinct = self._count_member(
+                                self.login_usernames,
+                                scope_key,
+                                f"sgw:behav:loginusers:{scope_key}",
+                                uname,
+                                now,
+                                300,
+                            )
+                            if distinct >= 5:
                                 triggered.append({
                                     "type": "credential_stuffing",
                                     "owasp_id": "API2",
                                     "severity": "high",
-                                    "title": f"Credential Stuffing Attack on {path} ({len(u_map)} distinct accounts)",
-                                    "description": f"Source IP {ip} attempted authentication against {len(u_map)} distinct usernames within 5 minutes on {path}.",
+                                    "title": f"Credential Stuffing Attack on {path} ({distinct} distinct accounts)",
+                                    "description": f"Source IP {ip} attempted authentication against {distinct} distinct usernames within 5 minutes on {path}.",
                                 })
                     except Exception:
                         pass
 
-                if len(fails) >= 5:
+                if fails >= 5:
                     triggered.append({
                         "type": "brute_force_login",
                         "owasp_id": "API2",
                         "severity": "high",
-                        "title": f"Brute-Force Authentication Attack on {path} ({len(fails)} failed attempts/min)",
-                        "description": f"Source IP {ip} triggered {len(fails)} failed 401 authentication attempts on {log.method} {path} in under 60 seconds.",
+                        "title": f"Brute-Force Authentication Attack on {path} ({fails} failed attempts/min)",
+                        "description": f"Source IP {ip} triggered {fails} failed 401 authentication attempts on {log.method} {path} in under 60 seconds.",
                     })
 
         # 4. BOLA Object ID Enumeration & Ownership Violation (API1 - High)
@@ -107,30 +175,30 @@ class BehavioralTracker:
             obj_id = numeric_seg or (segments[1] if len(segments) >= 2 else "id")
             resource_prefix = segments[0] if segments else "resource"
             key = f"{scope_key}:{resource_prefix}"
-            id_map = self._prune_dict(self.bola_object_ids.get(key, {}), 60, now)
-            id_map[obj_id] = now
-            self.bola_object_ids[key] = id_map
+            distinct_ids = self._count_member(
+                self.bola_object_ids, key, f"sgw:behav:bola:{key}", obj_id, now, 60
+            )
 
-            if len(id_map) >= 4 or log.owasp_id == "API1":
+            if distinct_ids >= 4 or log.owasp_id == "API1":
                 triggered.append({
                     "type": "bola_enumeration",
                     "owasp_id": "API1",
                     "severity": "high",
                     "title": f"BOLA Object ID Enumeration / Unauthorized Access on {path}",
-                    "description": f"Principal '{sub}' ({ip}) probed {len(id_map)} distinct object IDs ({', '.join(list(id_map.keys())[:6])}) on {path}. {reason}",
+                    "description": f"Principal '{sub}' ({ip}) probed {distinct_ids} distinct object IDs on {path}. {reason}",
                 })
 
         # 5. BFLA Privilege Escalation Probe (API5 - High)
         if log.owasp_id == "API5" or (path.startswith("/admin") and log.user_role != "admin"):
-            probes = self._prune_ts(self.bfla_probes.get(scope_key, []), 300, now)
-            probes.append(now)
-            self.bfla_probes[scope_key] = probes
+            probes = self._count_event(
+                self.bfla_probes, scope_key, f"sgw:behav:bfla:{scope_key}", now, 300
+            )
             triggered.append({
                 "type": "bfla_privilege_probe",
                 "owasp_id": "API5",
                 "severity": "high",
                 "title": f"BFLA Privilege Escalation Probe on Admin Endpoint ({path})",
-                "description": f"Non-admin principal '{sub}' (role={log.user_role or 'user'}) attempted to invoke administrative function '{log.method} {path}' ({len(probes)} attempts).",
+                "description": f"Non-admin principal '{sub}' (role={log.user_role or 'user'}) attempted to invoke administrative function '{log.method} {path}' ({probes} attempts).",
             })
 
         # 6. SSRF Attempt (API7 - Critical)
@@ -165,43 +233,43 @@ class BehavioralTracker:
 
         # 9. Sensitive Business Flow Abuse (API6 - High)
         if log.owasp_id == "API6":
-            hits = self._prune_ts(self.sensitive_flow_hits.get(scope_key, []), 60, now)
-            hits.append(now)
-            self.sensitive_flow_hits[scope_key] = hits
-            if len(hits) >= 5 or log.decision == "rate_limited":
+            hits = self._count_event(
+                self.sensitive_flow_hits, scope_key, f"sgw:behav:sensitive:{scope_key}", now, 60
+            )
+            if hits >= 5 or log.decision == "rate_limited":
                 triggered.append({
                     "type": "sensitive_flow_abuse",
                     "owasp_id": "API6",
                     "severity": "high",
                     "title": f"Automated Bot Abuse on Sensitive Business Flow ({path})",
-                    "description": f"High-velocity automated requests ({len(hits)} req/min) detected from {ip} against sensitive business flow '{path}'.",
+                    "description": f"High-velocity automated requests ({hits} req/min) detected from {ip} against sensitive business flow '{path}'.",
                 })
 
         # 10. Rate Limit Abuse & Resource Exhaustion (API4 - Medium)
         if log.owasp_id == "API4":
-            rl_hits = self._prune_ts(self.rate_limit_hits.get(scope_key, []), 300, now)
-            rl_hits.append(now)
-            self.rate_limit_hits[scope_key] = rl_hits
-            if len(rl_hits) >= 3 or "pagination" in reason.lower() or "payload size" in reason.lower():
+            rl_hits = self._count_event(
+                self.rate_limit_hits, scope_key, f"sgw:behav:rate:{scope_key}", now, 300
+            )
+            if rl_hits >= 3 or "pagination" in reason.lower() or "payload size" in reason.lower():
                 triggered.append({
                     "type": "resource_exhaustion",
                     "owasp_id": "API4",
                     "severity": "medium",
                     "title": f"Unrestricted Resource Consumption / Rate Abuse ({path})",
-                    "description": f"Client {ip} triggered resource consumption policy on '{log.method} {path}' ({len(rl_hits)} events). {reason}",
+                    "description": f"Client {ip} triggered resource consumption policy on '{log.method} {path}' ({rl_hits} events). {reason}",
                 })
 
         # 11. Shadow API Endpoint Probing (API9 - Medium/High)
         if log.owasp_id == "API9":
-            sh_hits = self._prune_ts(self.shadow_scan_hits.get(scope_key, []), 300, now)
-            sh_hits.append(now)
-            self.shadow_scan_hits[scope_key] = sh_hits
+            sh_hits = self._count_event(
+                self.shadow_scan_hits, scope_key, f"sgw:behav:shadow:{scope_key}", now, 300
+            )
             triggered.append({
                 "type": "shadow_endpoint_scan",
                 "owasp_id": "API9",
-                "severity": "high" if len(sh_hits) >= 3 else "medium",
+                "severity": "high" if sh_hits >= 3 else "medium",
                 "title": f"Undocumented Shadow API Discovery / Reconnaissance ({path})",
-                "description": f"Client {ip} probed undocumented endpoint '{log.method} {path}' ({len(sh_hits)} shadow hits in window).",
+                "description": f"Client {ip} probed undocumented endpoint '{log.method} {path}' ({sh_hits} shadow hits in window).",
             })
 
         # 12. Behavioral Anomaly Z-Score Spike (API4/API6 - Medium)

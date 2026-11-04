@@ -4,13 +4,17 @@ from datetime import datetime, timezone
 import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
-from fastapi import Request, Response
+from fastapi import BackgroundTasks, Request, Response
 import httpx
+from sqlalchemy import update
 from sqlmodel import Session, select
 
 from app.config import settings
 from app.db import engine
+from app.gateway.http_client import get_http_client
 from app.models import BlocklistEntry, RequestLog, Route, Upstream
+from app.runtime_cache import runtime_cache
+from app.runtime_state import gateway_state
 from app.gateway.auth import get_upstream_jwt_config, validate_jwt_checklist, verify_api_key
 from app.gateway.ratelimit import rate_limiter
 from app.gateway.inspector import inspect_request_payload
@@ -161,18 +165,6 @@ def _build_synthesized_swagger_html(proj_name: str, gw_prefix: str) -> str:
 </html>"""
 
 
-class GatewayRuntimeState:
-    """Global runtime switches controllable from the Dashboard / Attack Simulator."""
-    def __init__(self):
-        self.gateway_enabled: bool = True
-        self.auto_block_critical: bool = settings.AUTO_BLOCK_CRITICAL
-        self.auto_block_duration_minutes: int = settings.AUTO_BLOCK_DURATION_MINUTES
-        self.anomaly_zscore_threshold: float = 3.0
-
-
-gateway_state = GatewayRuntimeState()
-
-
 def _rewrite_swagger_if_needed(
     norm_path: str,
     gw_prefix: str,
@@ -280,15 +272,35 @@ def _mask_sensitive_headers(headers: Dict[str, str]) -> Dict[str, str]:
     return masked
 
 
+def _cached_upstreams(session: Session) -> List[Upstream]:
+    cached = runtime_cache.get("upstreams:all")
+    if cached is not None:
+        return cached
+    rows = session.exec(select(Upstream)).all()
+    runtime_cache.set("upstreams:all", rows)
+    return rows
+
+
+def _cached_active_blocklist(session: Session) -> List[BlocklistEntry]:
+    cached = runtime_cache.get("blocklist:active")
+    if cached is not None:
+        return cached
+    rows = session.exec(select(BlocklistEntry).where(BlocklistEntry.active == True)).all()
+    runtime_cache.set("blocklist:active", rows)
+    return rows
+
+
 def _is_blocked(session: Session, client_ip: str, user_sub: Optional[str], api_key_id: Optional[int]) -> Optional[BlocklistEntry]:
     now = datetime.now(timezone.utc)
-    entries = session.exec(select(BlocklistEntry).where(BlocklistEntry.active == True)).all()
+    entries = _cached_active_blocklist(session)
     for entry in entries:
         if entry.expires_at:
             exp_utc = entry.expires_at if entry.expires_at.tzinfo else entry.expires_at.replace(tzinfo=timezone.utc)
             if now > exp_utc:
-                entry.active = False
-                session.add(entry)
+                live = session.get(BlocklistEntry, entry.id)
+                if live is not None:
+                    live.active = False
+                    session.add(live)
                 continue
         if entry.target_type == "ip" and entry.value == client_ip:
             return entry
@@ -303,6 +315,7 @@ async def execute_gateway_pipeline(
     request: Request,
     forward_path: str,
     local_asgi_app: Any = None,
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> Response:
     """
     Executes the 10-stage API Security Gateway pipeline on every request to /gw/{path:path}.
@@ -335,7 +348,7 @@ async def execute_gateway_pipeline(
     route_id: Optional[int] = None
 
     with Session(engine) as session:
-        all_upstreams = session.exec(select(Upstream)).all()
+        all_upstreams = _cached_upstreams(session)
         upstream = next((u for u in all_upstreams if u.enabled), all_upstreams[0] if all_upstreams else None)
 
         # Track whether the caller used a slug prefix (/gw/{slug}/...) so we can rewrite /docs and /openapi.json
@@ -362,10 +375,6 @@ async def execute_gateway_pipeline(
 
         if matched_route:
             route_id = matched_route.id
-            matched_route.hit_count = (matched_route.hit_count or 0) + 1
-            matched_route.last_seen_at = datetime.now(timezone.utc)
-            session.add(matched_route)
-            session.commit()
         elif not is_swagger_doc_route and upstream_id != 1 and not is_shadow_probe:
             existing_proj_routes = session.exec(
                 select(Route).where(Route.upstream_id == upstream_id, Route.registered == True)
@@ -401,6 +410,7 @@ async def execute_gateway_pipeline(
         ) -> Response:
             return await _reject_request(
                 session=session,
+                background_tasks=background_tasks,
                 t0=t0,
                 request_id=request_id,
                 client_ip=client_ip,
@@ -445,8 +455,8 @@ async def execute_gateway_pipeline(
             resp_headers["X-Request-ID"] = request_id
             resp_headers["X-Gateway-Mode"] = "BYPASSED-OFF"
             latency_ms = round((time.perf_counter() - t0) * 1000, 2)
-            await _record_and_detect(
-                session=session,
+            await _dispatch_record(
+                background_tasks,
                 request_id=request_id,
                 client_ip=client_ip,
                 user_sub=user_sub,
@@ -748,8 +758,8 @@ async def execute_gateway_pipeline(
 
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
-        await _record_and_detect(
-            session=session,
+        await _dispatch_record(
+            background_tasks,
             request_id=request_id,
             client_ip=client_ip,
             user_sub=user_sub,
@@ -1024,38 +1034,38 @@ async def _forward_to_upstream(
 
     target_url = base_url.rstrip("/") + full_path_with_qs
     try:
-        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
-            resp = await client.request(
-                method=method,
-                url=target_url,
-                headers=forward_headers,
-                content=body_bytes,
-            )
-            # If the upstream is a static SPA on Vercel/Netlify that returns 405 Method Not Allowed
-            # or returns its SPA index.html shell (`content-disposition: inline; filename="index.html"`)
-            # for REST API paths, check if it's a Firebase SPA and bridge to Firebase Auth / Firestore REST API!
-            content_disp = (resp.headers.get("content-disposition") or "").lower()
-            content_type = (resp.headers.get("content-type") or "").lower()
-            is_spa_shell_fallback = (
-                resp.status_code == 405
-                or ('filename="index.html"' in content_disp and path not in ("/", "/index.html", "/docs"))
-                or ("text/html" in content_type and "<div id=\"root\">" in resp.text and path not in ("/", "/index.html", "/docs"))
-            )
-            if is_spa_shell_fallback:
-                fb_cfg = await _detect_firebase_spa_config(base_url.rstrip("/"), client)
-                if fb_cfg:
-                    bridged = await _bridge_firebase_spa_request(
-                        method=method,
-                        path=path,
-                        query_string=query_string,
-                        forward_headers=forward_headers,
-                        body_bytes=body_bytes,
-                        fb_cfg=fb_cfg,
-                        client=client,
-                    )
-                    if bridged is not None:
-                        return bridged
-            return resp.status_code, dict(resp.headers), resp.text
+        client = get_http_client()
+        resp = await client.request(
+            method=method,
+            url=target_url,
+            headers=forward_headers,
+            content=body_bytes,
+        )
+        # If the upstream is a static SPA on Vercel/Netlify that returns 405 Method Not Allowed
+        # or returns its SPA index.html shell (`content-disposition: inline; filename="index.html"`)
+        # for REST API paths, check if it's a Firebase SPA and bridge to Firebase Auth / Firestore REST API!
+        content_disp = (resp.headers.get("content-disposition") or "").lower()
+        content_type = (resp.headers.get("content-type") or "").lower()
+        is_spa_shell_fallback = (
+            resp.status_code == 405
+            or ('filename="index.html"' in content_disp and path not in ("/", "/index.html", "/docs"))
+            or ("text/html" in content_type and "<div id=\"root\">" in resp.text and path not in ("/", "/index.html", "/docs"))
+        )
+        if is_spa_shell_fallback:
+            fb_cfg = await _detect_firebase_spa_config(base_url.rstrip("/"), client)
+            if fb_cfg:
+                bridged = await _bridge_firebase_spa_request(
+                    method=method,
+                    path=path,
+                    query_string=query_string,
+                    forward_headers=forward_headers,
+                    body_bytes=body_bytes,
+                    fb_cfg=fb_cfg,
+                    client=client,
+                )
+                if bridged is not None:
+                    return bridged
+        return resp.status_code, dict(resp.headers), resp.text
     except Exception as exc:
         err_body = json.dumps({"error": "Bad Gateway", "detail": f"Upstream connection failed: {exc}"})
         return 502, {"Content-Type": "application/json"}, err_body
@@ -1063,6 +1073,7 @@ async def _forward_to_upstream(
 
 async def _reject_request(
     session: Session,
+    background_tasks: Optional[BackgroundTasks],
     t0: float,
     request_id: str,
     client_ip: str,
@@ -1107,8 +1118,8 @@ async def _reject_request(
     if extra_headers:
         out_headers.update(extra_headers)
 
-    await _record_and_detect(
-        session=session,
+    await _dispatch_record(
+        background_tasks,
         request_id=request_id,
         client_ip=client_ip,
         user_sub=user_sub,
@@ -1135,6 +1146,19 @@ async def _reject_request(
         threat_score=threat_score,
     )
     return Response(content=resp_body, status_code=http_status, headers=out_headers, media_type="application/json")
+
+
+async def _dispatch_record(background_tasks: Optional[BackgroundTasks], **kwargs: Any) -> None:
+    if background_tasks is not None:
+        background_tasks.add_task(_record_and_detect_background, **kwargs)
+        return
+    with Session(engine) as session:
+        await _record_and_detect(session=session, **kwargs)
+
+
+async def _record_and_detect_background(**kwargs: Any) -> None:
+    with Session(engine) as session:
+        await _record_and_detect(session=session, **kwargs)
 
 
 async def _record_and_detect(
@@ -1195,6 +1219,12 @@ async def _record_and_detect(
         anomaly_zscore=0.0,
     )
     session.add(log_entry)
+    if route_id:
+        session.exec(
+            update(Route)
+            .where(Route.id == route_id)
+            .values(hit_count=Route.hit_count + 1, last_seen_at=datetime.now(timezone.utc))
+        )
     session.commit()
     session.refresh(log_entry)
 

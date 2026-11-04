@@ -11,14 +11,14 @@ export const NotFoundForbiddenPage: React.FC<{ mode?: '404' | '403' }> = ({ mode
       <div className="text-xs font-mono uppercase tracking-wider text-rose-400">
         {mode === '403' ? 'HTTP 403 · Role Permission Denied' : 'HTTP 404 · Route Not Found'}
       </div>
-      <h1 className="text-2xl font-bold text-white mt-1">
+      <h1 className="text-xl sm:text-2xl font-bold text-white mt-1 px-2">
         {mode === '403'
           ? 'Your Current Role Cannot Access This Resource'
           : 'Control Plane Screen Not Found'}
       </h1>
       <p className="text-xs text-slate-400 max-w-md mt-2">
         {mode === '403'
-          ? 'Use the Instant Persona Switcher in the top navigation bar to switch to Admin, Analyst, or Developer.'
+          ? 'Ask an admin to raise your role in Users & Access if you need write permissions.'
           : 'The requested dashboard path does not exist in SentinelGW.'}
       </p>
       <Link
