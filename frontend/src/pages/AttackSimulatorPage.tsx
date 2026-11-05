@@ -63,6 +63,8 @@ export const AttackSimulatorPage: React.FC = () => {
   const [jwtMeta, setJwtMeta] = useState<any | null>(null);
   const [lastValidatedToken, setLastValidatedToken] = useState('');
   const [validatingJwt, setValidatingJwt] = useState(false);
+  // scenarioId -> { role -> routeId | '' for auto }
+  const [routePicks, setRoutePicks] = useState<Record<string, Record<string, string>>>({});
 
   const loadData = async () => {
     try {
@@ -126,6 +128,28 @@ export const AttackSimulatorPage: React.FC = () => {
     }
   };
 
+  const setRolePick = (scenarioId: string, role: string, value: string) => {
+    setRoutePicks((prev) => ({
+      ...prev,
+      [scenarioId]: {
+        ...(prev[scenarioId] || {}),
+        [role]: value,
+      },
+    }));
+  };
+
+  const buildRouteOverrides = (scenarioId: string) => {
+    const picks = routePicks[scenarioId] || {};
+    const overrides: Record<string, number> = {};
+    Object.entries(picks).forEach(([role, value]) => {
+      if (value && value !== 'auto') {
+        const id = Number(value);
+        if (!Number.isNaN(id)) overrides[role] = id;
+      }
+    });
+    return Object.keys(overrides).length ? overrides : undefined;
+  };
+
   const handleRunScenario = async (scenarioId: string) => {
     const trimmed = authJwt.trim() || readStoredSimJwt(selectedProjectId);
     if (trimmed) {
@@ -143,19 +167,30 @@ export const AttackSimulatorPage: React.FC = () => {
 
     setRunningId(scenarioId);
     try {
+      const routeOverrides = buildRouteOverrides(scenarioId);
       const res = await apiFetch('/simulator/run', {
         method: 'POST',
         body: JSON.stringify({
           scenario_id: scenarioId,
           upstream_id: selectedProjectId,
           auth_token: trimmed || undefined,
+          route_overrides: routeOverrides,
         }),
       });
       setLastResult(res);
+      const skipped = res.applicable === false;
       addToast({
-        title: `Attack Test Finished (${res.owasp_id || 'ALL'})`,
-        message: `${res.blocked_count} Blocked · ${res.passed_through_count} Reached Server`,
-        severity: res.passed_through_count > 0 && !res.gateway_enabled ? 'critical' : 'info',
+        title: skipped
+          ? `Scenario Not Applicable (${res.owasp_id || scenarioId})`
+          : `Attack Test Finished (${res.owasp_id || 'ALL'})`,
+        message: skipped
+          ? res.skip_reason || 'No suitable route for this project'
+          : `${res.blocked_count} Blocked · ${res.passed_through_count} Reached Server`,
+        severity: skipped
+          ? 'info'
+          : res.passed_through_count > 0 && !res.gateway_enabled
+            ? 'critical'
+            : 'info',
       });
       await loadData();
     } catch (err: any) {
@@ -172,6 +207,7 @@ export const AttackSimulatorPage: React.FC = () => {
     setJwtError('');
     setJwtMeta(null);
     setLastValidatedToken('');
+    setRoutePicks({});
 
     const init = async () => {
       await loadData();
@@ -528,23 +564,82 @@ export const AttackSimulatorPage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <span className="text-[11px] font-mono text-slate-400 truncate min-w-0">
-                  {sc.target_endpoint}
-                </span>
-                <button
-                  disabled={
-                    runningId !== null ||
-                    jwtStatus === 'invalid' ||
-                    jwtStatus === 'validating' ||
-                    !canMutate(['admin', 'analyst', 'developer'])
-                  }
-                  onClick={() => handleRunScenario(sc.id)}
-                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-mono font-bold disabled:opacity-50 transition"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  {runningId === sc.id ? 'Running...' : 'Run Scenario'}
-                </button>
+              <div className="mt-4 pt-3 border-t border-slate-800/80 space-y-3">
+                {(sc.selectable_roles || []).length > 0 ? (
+                  <div className="space-y-2">
+                    {(sc.selectable_roles || []).map((roleSel: any) => {
+                      const pickValue = routePicks[sc.id]?.[roleSel.role] ?? 'auto';
+                      const auto = (roleSel.candidates || []).find((c: any) => c.recommended);
+                      return (
+                        <label key={roleSel.role} className="block">
+                          <span className="text-[10px] font-mono uppercase tracking-wide text-slate-500">
+                            {roleSel.label}
+                          </span>
+                          <select
+                            value={pickValue}
+                            onChange={(e) => setRolePick(sc.id, roleSel.role, e.target.value)}
+                            className="mt-1 w-full rounded-lg bg-slate-950 border border-slate-700 text-xs font-mono text-slate-200 px-2.5 py-2 focus:outline-none focus:border-cyan-500/60"
+                          >
+                            <option value="auto">
+                              Auto
+                              {auto
+                                ? ` — ${auto.method} ${auto.path_pattern}`
+                                : ' — best match for this project'}
+                            </option>
+                            {(roleSel.candidates || [])
+                              .filter((c: any) => c.fit === 'good' || c.fit === 'weak')
+                              .map((c: any) => (
+                                <option key={`${roleSel.role}-g-${c.id}`} value={String(c.id)}>
+                                  {c.fit === 'good' ? '●' : '○'} {c.method} {c.path_pattern}
+                                  {c.recommended ? ' (recommended)' : ''}
+                                </option>
+                              ))}
+                            {(roleSel.candidates || []).some((c: any) => c.fit === 'other') && (
+                              <option disabled>── other project routes ──</option>
+                            )}
+                            {(roleSel.candidates || [])
+                              .filter((c: any) => c.fit === 'other')
+                              .map((c: any) => (
+                                <option key={`${roleSel.role}-o-${c.id}`} value={String(c.id)}>
+                                  {c.method} {c.path_pattern}
+                                </option>
+                              ))}
+                          </select>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <span className="text-[11px] font-mono text-slate-400 truncate block">
+                    {sc.target_endpoint}
+                  </span>
+                )}
+
+                {sc.applicable === false && !(routePicks[sc.id] && Object.values(routePicks[sc.id]).some((v) => v && v !== 'auto')) && (
+                  <p className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-2">
+                    No auto-match for this project. Pick a route manually above, or import a matching endpoint.
+                    {sc.skip_reason ? ` (${sc.skip_reason})` : ''}
+                  </p>
+                )}
+
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span className="text-[11px] font-mono text-slate-500 truncate min-w-0">
+                    {sc.target_endpoint}
+                  </span>
+                  <button
+                    disabled={
+                      runningId !== null ||
+                      jwtStatus === 'invalid' ||
+                      jwtStatus === 'validating' ||
+                      !canMutate(['admin', 'analyst', 'developer'])
+                    }
+                    onClick={() => handleRunScenario(sc.id)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-mono font-bold disabled:opacity-50 transition shrink-0"
+                  >
+                    <Play className="w-3.5 h-3.5" />
+                    {runningId === sc.id ? 'Running...' : 'Run Scenario'}
+                  </button>
+                </div>
               </div>
             </div>
           );

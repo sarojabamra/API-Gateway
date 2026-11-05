@@ -23,6 +23,7 @@ import {
 import { apiFetch } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
+import { LoadError } from '../components/shared/LoadError';
 
 export const OverviewPage: React.FC = () => {
   const {
@@ -37,6 +38,7 @@ export const OverviewPage: React.FC = () => {
   } = useGatewayStore();
   const [data, setData] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [testingLiveCall, setTestingLiveCall] = useState(false);
   const navigate = useNavigate();
 
@@ -48,8 +50,9 @@ export const OverviewPage: React.FC = () => {
       );
       setData(res);
       setGatewayEnabled(res.gateway_enabled);
-    } catch {
-      // ignore
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err?.message || 'Failed to load overview');
     } finally {
       setLoading(false);
     }
@@ -145,6 +148,7 @@ export const OverviewPage: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {loadError && <LoadError message={loadError} onRetry={fetchOverview} />}
       {/* Header Banner */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>

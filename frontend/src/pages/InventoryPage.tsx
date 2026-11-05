@@ -867,7 +867,9 @@ export const InventoryPage: React.FC = () => {
                             </span>
                             {r.bola_check_enabled && (
                               <span className="px-2 py-0.5 rounded bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 font-mono text-[10px]">
-                                ID Ownership Check
+                                {r.bola_mode === 'learned_owner'
+                                  ? `BOLA owner:${r.bola_owner_param || 'id'}`
+                                  : `BOLA sub==${r.bola_owner_param || 'id'}`}
                               </span>
                             )}
                           </div>

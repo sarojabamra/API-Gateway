@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     AUTO_BLOCK_CRITICAL: bool = False
     AUTO_BLOCK_DURATION_MINUTES: int = 60
 
+    # Optional outbound webhook for critical alerts (JSON POST)
+    WEBHOOK_URL: Optional[str] = None
+
+    # Upstream response size cap (bytes) before Stage 10 truncates/sanitizes
+    MAX_UPSTREAM_RESPONSE_BYTES: int = 1048576
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

@@ -17,6 +17,52 @@ from app.gateway.policy_engine import infer_route_security
 router = APIRouter(prefix="/inventory", tags=["Protected APIs, Route Registry & Shadow APIs"])
 
 
+def _resolve_local_ref(spec: Dict[str, Any], node: Any, _depth: int = 0) -> Any:
+    """Resolve local #/components/... $ref pointers (shallow, cycle-safe)."""
+    if _depth > 8 or not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/"):
+        cur: Any = spec
+        for part in ref[2:].split("/"):
+            if not isinstance(cur, dict) or part not in cur:
+                return node
+            cur = cur[part]
+        return _resolve_local_ref(spec, cur, _depth + 1)
+    out = {}
+    for k, v in node.items():
+        if isinstance(v, dict):
+            out[k] = _resolve_local_ref(spec, v, _depth + 1)
+        elif isinstance(v, list):
+            out[k] = [_resolve_local_ref(spec, i, _depth + 1) if isinstance(i, dict) else i for i in v]
+        else:
+            out[k] = v
+    return out
+
+
+def _extract_request_schema(spec: Dict[str, Any], op_spec: Dict[str, Any]) -> Optional[str]:
+    body = op_spec.get("requestBody")
+    if not isinstance(body, dict):
+        return None
+    content = body.get("content") or {}
+    for ctype in ("application/json", "application/merge-patch+json", "*/*"):
+        media = content.get(ctype)
+        if isinstance(media, dict) and media.get("schema"):
+            resolved = _resolve_local_ref(spec, media["schema"])
+            try:
+                return json.dumps(resolved)
+            except Exception:
+                return None
+    # Fall back to first media type with a schema
+    for media in content.values():
+        if isinstance(media, dict) and media.get("schema"):
+            try:
+                return json.dumps(_resolve_local_ref(spec, media["schema"]))
+            except Exception:
+                return None
+    return None
+
+
 def _upsert_openapi_routes(
     session: Session,
     upstream_id: int,
@@ -24,6 +70,15 @@ def _upsert_openapi_routes(
 ) -> List[Dict[str, Any]]:
     paths_obj: Dict[str, Any] = spec.get("paths") or {}
     imported: List[Dict[str, Any]] = []
+
+    # Persist the raw OpenAPI document on the upstream for inventory / drift checks
+    upstream = session.get(Upstream, upstream_id)
+    if upstream is not None:
+        try:
+            upstream.openapi_spec_json = json.dumps(spec)
+            session.add(upstream)
+        except Exception:
+            pass
 
     for path_pattern, methods_map in paths_obj.items():
         if not isinstance(methods_map, dict):
@@ -41,6 +96,7 @@ def _upsert_openapi_routes(
                 or f"{m_upper} {path_pattern}"
             )
             meta = infer_route_security(path_pattern, op_spec, spec)
+            schema_json = _extract_request_schema(spec, op_spec)
             existing = session.exec(
                 select(Route).where(
                     Route.upstream_id == upstream_id,
@@ -55,7 +111,12 @@ def _upsert_openapi_routes(
                 existing.auth_required = meta["auth_required"]
                 existing.required_role = meta["required_role"] or existing.required_role
                 existing.bola_check_enabled = meta["bola_check_enabled"]
+                existing.bola_owner_claim = meta.get("bola_owner_claim", "sub")
+                existing.bola_owner_param = meta.get("bola_owner_param", "id")
+                existing.bola_mode = meta.get("bola_mode", "equals_sub")
                 existing.is_sensitive_flow = meta["is_sensitive_flow"]
+                if schema_json:
+                    existing.request_schema_json = schema_json
                 session.add(existing)
                 imported.append({"method": m_upper, "path_pattern": path_pattern, "action": "updated"})
             else:
@@ -66,6 +127,7 @@ def _upsert_openapi_routes(
                         path_pattern=path_pattern,
                         description=summary,
                         registered=True,
+                        request_schema_json=schema_json,
                         **meta,
                     )
                 )
@@ -110,6 +172,11 @@ def get_inventory(session: Session = Depends(get_session)):
                 "burst_capacity": r.burst_capacity,
                 "is_sensitive_flow": r.is_sensitive_flow,
                 "bola_check_enabled": r.bola_check_enabled,
+                "bola_owner_claim": getattr(r, "bola_owner_claim", "sub"),
+                "bola_owner_param": getattr(r, "bola_owner_param", "id"),
+                "bola_mode": getattr(r, "bola_mode", "equals_sub") or "equals_sub",
+                "has_request_schema": bool(r.request_schema_json),
+                "request_schema": json.loads(r.request_schema_json) if r.request_schema_json else None,
                 "response_redact_fields": json.loads(r.response_redact_fields_json or "[]"),
                 "hit_count": r.hit_count,
                 "last_seen_at": to_ist_iso(r.last_seen_at),
@@ -281,6 +348,11 @@ def create_route(
         response_redact_fields_json=json.dumps(payload.response_redact_fields),
         registered=True,
     )
+    if payload.bola_check_enabled:
+        meta = infer_route_security(route.path_pattern)
+        route.bola_owner_param = meta.get("bola_owner_param", "id")
+        route.bola_owner_claim = meta.get("bola_owner_claim", "sub")
+        route.bola_mode = meta.get("bola_mode", "equals_sub")
     session.add(route)
     session.commit()
     session.refresh(route)

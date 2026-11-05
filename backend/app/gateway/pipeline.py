@@ -17,12 +17,24 @@ from app.runtime_cache import runtime_cache
 from app.runtime_state import gateway_state
 from app.gateway.auth import get_upstream_jwt_config, validate_jwt_checklist, verify_api_key
 from app.gateway.ratelimit import rate_limiter
-from app.gateway.inspector import inspect_request_payload
+from app.gateway.circuit_breaker import circuit_breaker
+from app.gateway.inspector import (
+    egress_trust_keys_for_base_url,
+    inspect_egress_destination,
+    inspect_request_payload,
+    inspect_response_for_unsafe_urls,
+    strip_unsafe_urls_from_json,
+)
 from app.gateway.policy_engine import (
     check_bola_ownership,
     check_policy_mode,
     find_matching_route,
+    find_shadow_route,
+    get_policy_config,
     is_public_auth_path,
+    remember_object_owner,
+    resolve_bola_owner_param,
+    track_bola_enumeration,
 )
 from app.gateway.responses import harden_response
 
@@ -371,33 +383,32 @@ async def execute_gateway_pipeline(
 
         # Look up matching route early so hit_count increments on EVERY call (even in Bypass mode or if blocked)
         matched_route, path_params = find_matching_route(session, upstream_id, method, norm_path)
-        is_shadow_probe = request.headers.get("X-Simulator-Shadow") == "1"
 
+        # Never auto-register unknown paths as official public routes (API5/API9 hardening).
+        # Empty inventories must go through Shadow API discovery instead.
         if matched_route:
             route_id = matched_route.id
-        elif not is_swagger_doc_route and upstream_id != 1 and not is_shadow_probe:
-            existing_proj_routes = session.exec(
-                select(Route).where(Route.upstream_id == upstream_id, Route.registered == True)
-            ).all()
-            if len(existing_proj_routes) == 0:
-                matched_route = Route(
-                    upstream_id=upstream_id,
-                    method=method,
-                    path_pattern=norm_path,
-                    description=f"Auto-discovered route on {upstream.name if upstream else 'Connected API'}",
-                    auth_required=False,
-                    registered=True,
-                    hit_count=1,
-                    last_seen_at=datetime.now(timezone.utc),
-                )
-                session.add(matched_route)
-                session.commit()
-                session.refresh(matched_route)
-                route_id = matched_route.id
 
         auth_header = request.headers.get("Authorization", "")
         api_key_header = request.headers.get("X-API-Key", "")
         req_headers_dict = dict(request.headers)
+
+        # Parse body JSON once for BOLA / inspector reuse
+        body_json: Optional[Dict[str, Any]] = None
+        if body_text and body_text.strip().startswith("{"):
+            try:
+                parsed_body = json.loads(body_text)
+                if isinstance(parsed_body, dict):
+                    body_json = parsed_body
+            except Exception:
+                body_json = None
+
+        query_param_map: Dict[str, str] = {}
+        if query_string:
+            from urllib.parse import parse_qs as _parse_qs
+            for qk, qv in _parse_qs(query_string, keep_blank_values=True).items():
+                if qv:
+                    query_param_map[qk] = qv[0]
 
         async def reject(
             http_status: int,
@@ -497,13 +508,7 @@ async def execute_gateway_pipeline(
 
         # STAGE 4: Route Registry Lookup & Shadow API Discovery (OWASP API9)
         if not matched_route and not is_swagger_doc_route:
-            shadow = session.exec(
-                select(Route).where(
-                    Route.upstream_id == upstream_id,
-                    Route.path_pattern == norm_path,
-                    Route.registered == False,
-                )
-            ).first()
+            shadow = find_shadow_route(session, upstream_id, method, norm_path)
             if not shadow:
                 shadow = Route(
                     upstream_id=upstream_id,
@@ -518,6 +523,7 @@ async def execute_gateway_pipeline(
                 session.add(shadow)
                 session.commit()
                 session.refresh(shadow)
+                runtime_cache.invalidate()
             else:
                 shadow.hit_count = (shadow.hit_count or 0) + 1
                 shadow.last_seen_at = datetime.now(timezone.utc)
@@ -580,9 +586,19 @@ async def execute_gateway_pipeline(
                             401, "blocked", "Missing Bearer JWT or X-API-Key on protected route (OWASP API2)", "API2", 60, pol_id
                         )
                 else:
+                    expected_scope = None
+                    if matched_route and matched_route.required_scopes_json:
+                        try:
+                            scopes_list = json.loads(matched_route.required_scopes_json or "[]")
+                            if scopes_list:
+                                expected_scope = scopes_list[0]
+                        except Exception:
+                            expected_scope = None
                     jwt_res = validate_jwt_checklist(
                         auth_header,
                         session,
+                        expected_role=matched_route.required_role if matched_route else None,
+                        expected_scope=expected_scope,
                         jwt_config=get_upstream_jwt_config(session, upstream_id),
                     )
                     decoded_jwt = {"header": jwt_res.get("header"), "payload": jwt_res.get("payload"), "steps": jwt_res.get("steps")}
@@ -593,6 +609,27 @@ async def execute_gateway_pipeline(
                     if not jwt_res["valid"]:
                         fail_code = jwt_res.get("failure_code", "jwt_invalid")
                         score = 95 if fail_code in ("jwt_alg_none", "jwt_bad_signature", "jwt_algorithm_confusion") else 75
+                        # Brute-force / failed-auth lockout from policy config
+                        if is_auth_bootstrap_route or fail_code in ("jwt_bad_signature", "jwt_expired", "jwt_revoked"):
+                            auth_cfg = get_policy_config(session, "auth", "API2")
+                            max_fails = int(auth_cfg.get("max_login_failures", 5))
+                            fail_window = int(auth_cfg.get("login_failure_window_sec", 60))
+                            lock_key = f"login-fail:{client_ip}"
+                            locked, _, _ = rate_limiter.check_and_consume(
+                                key=lock_key,
+                                limit_rpm=max_fails,
+                                burst_capacity=max_fails,
+                                window_seconds=fail_window,
+                            )
+                            if not locked and pol_enabled and pol_mode == "enforce":
+                                return await reject(
+                                    429,
+                                    "rate_limited",
+                                    f"Login / auth failure lockout (OWASP API2): >{max_fails} failures in {fail_window}s from {client_ip}",
+                                    "API2",
+                                    80,
+                                    pol_id,
+                                )
                         if pol_enabled and pol_mode == "enforce":
                             return await reject(
                                 401,
@@ -622,7 +659,7 @@ async def execute_gateway_pipeline(
 
         # STAGE 6: Authorization — BFLA Role/Scope Check (OWASP API5) & BOLA Ownership Check (OWASP API1)
         if matched_route:
-            # 6a. Broken Function Level Authorization (API5)
+            # 6a. Broken Function Level Authorization (API5) — role + scopes
             req_role = matched_route.required_role
             if req_role and (user_role or "").lower() not in (req_role.lower(), "admin"):
                 pol_enabled, pol_mode, pol_id = check_policy_mode(session, "bfla", "API5")
@@ -642,8 +679,38 @@ async def execute_gateway_pipeline(
                     matched_policy_id = pol_id
                     threat_score = max(threat_score, 88)
 
+            required_scopes: List[str] = []
+            try:
+                required_scopes = json.loads(matched_route.required_scopes_json or "[]")
+            except Exception:
+                required_scopes = []
+            if required_scopes and (user_role or "").lower() != "admin":
+                token_scopes = (decoded_jwt.get("payload") or {}).get("scopes") or []
+                if isinstance(token_scopes, str):
+                    token_scopes = [token_scopes]
+                missing = [s for s in required_scopes if s not in token_scopes]
+                if missing:
+                    pol_enabled, pol_mode, pol_id = check_policy_mode(session, "bfla", "API5")
+                    if pol_enabled and pol_mode == "enforce":
+                        return await reject(
+                            403,
+                            "blocked",
+                            f"BFLA Scope Violation (OWASP API5): Missing required scope(s) {missing} on '{matched_route.path_pattern}'",
+                            "API5",
+                            88,
+                            pol_id,
+                        )
+
             # 6b. Broken Object Level Authorization (API1)
-            bola_ok, bola_err = check_bola_ownership(matched_route, path_params, user_sub, user_role)
+            bola_ok, bola_err = check_bola_ownership(
+                matched_route,
+                path_params,
+                user_sub,
+                user_role,
+                query_params=query_param_map,
+                body_json=body_json,
+                decoded_jwt=decoded_jwt.get("payload") or {},
+            )
             if not bola_ok:
                 pol_enabled, pol_mode, pol_id = check_policy_mode(session, "bola", "API1")
                 if pol_enabled and pol_mode == "enforce":
@@ -654,6 +721,34 @@ async def execute_gateway_pipeline(
                     owasp_id = "API1"
                     matched_policy_id = pol_id
                     threat_score = max(threat_score, 85)
+            elif matched_route.bola_check_enabled and path_params:
+                bola_cfg = get_policy_config(session, "bola", "API1")
+                max_ids = int(bola_cfg.get("max_distinct_ids_per_min", 5))
+                owner_param = resolve_bola_owner_param(matched_route, path_params)
+                obj_id = (
+                    path_params.get(owner_param)
+                    or path_params.get(getattr(matched_route, "bola_owner_param", "id") or "id")
+                    or path_params.get("id")
+                    or next(iter(path_params.values()), None)
+                )
+                if obj_id:
+                    exceeded, distinct = track_bola_enumeration(
+                        f"{upstream_id}:{client_ip}",
+                        str(obj_id),
+                        max_distinct=max_ids,
+                    )
+                    if exceeded:
+                        pol_enabled, pol_mode, pol_id = check_policy_mode(session, "bola", "API1")
+                        if pol_enabled and pol_mode == "enforce":
+                            return await reject(
+                                429,
+                                "rate_limited",
+                                f"BOLA ID enumeration blocked (OWASP API1): "
+                                f"{distinct} distinct object IDs in 60s (limit={max_ids})",
+                                "API1",
+                                85,
+                                pol_id,
+                            )
 
         # STAGE 7: Rate Limiting & Sensitive Business Flow Velocity (OWASP API4 & API6)
         limit_rpm = matched_route.rate_limit_rpm if matched_route else 60
@@ -663,12 +758,65 @@ async def execute_gateway_pipeline(
         rl_key = f"upstream-{upstream_id}:{client_ip}:{user_sub or 'anon'}:{matched_route.path_pattern if matched_route else norm_path}"
 
         if not is_swagger_doc_route:
-            rl_allowed, rate_headers, rl_meta = rate_limiter.check_and_consume(
+            # API2: credential-stuffing / brute-force lockout on login & token endpoints
+            if is_auth_bootstrap_route and method == "POST":
+                auth_cfg = get_policy_config(session, "auth", "API2")
+                max_fails = int(auth_cfg.get("max_login_failures", 5))
+                fail_window = int(auth_cfg.get("login_failure_window_sec", 60))
+                lock_key = f"login-fail:{upstream_id}:{client_ip}"
+                login_ok, login_headers, login_meta = rate_limiter.check_and_consume(
+                    key=lock_key,
+                    limit_rpm=max_fails,
+                    burst_capacity=max_fails,
+                    window_seconds=fail_window,
+                )
+                rate_headers.update(login_headers)
+                if not login_ok:
+                    pol_enabled, pol_mode, pol_id = check_policy_mode(session, "auth", "API2")
+                    if pol_enabled and pol_mode == "enforce":
+                        return await reject(
+                            429,
+                            "rate_limited",
+                            f"Login / credential-stuffing lockout (OWASP API2): >{max_fails} auth attempts in {fail_window}s from {client_ip}",
+                            "API2",
+                            80,
+                            pol_id,
+                            rate_headers,
+                        )
+
+            # Per-principal sensitive-flow daily/window cap (API6)
+            if is_sensitive and method in ("POST", "PUT", "PATCH"):
+                sens_cfg = get_policy_config(session, "rate_limit", "API6")
+                sens_rpm = int(sens_cfg.get("max_rpm") or limit_rpm or 6)
+                sens_burst = int(sens_cfg.get("burst") or burst_cap or 4)
+                sens_key = f"sgw:sens:{upstream_id}:{user_sub or client_ip}:{matched_route.path_pattern if matched_route else norm_path}"
+                sens_ok, sens_headers, sens_meta = rate_limiter.check_and_consume(
+                    key=sens_key,
+                    limit_rpm=sens_rpm,
+                    burst_capacity=sens_burst,
+                    window_seconds=60,
+                )
+                rate_headers.update(sens_headers)
+                if not sens_ok:
+                    pol_enabled, pol_mode, pol_id = check_policy_mode(session, "rate_limit", "API6")
+                    if pol_enabled and pol_mode == "enforce":
+                        return await reject(
+                            429,
+                            "rate_limited",
+                            f"Sensitive business flow velocity exceeded (OWASP API6): {sens_meta.get('reason')}",
+                            "API6",
+                            75,
+                            pol_id,
+                            rate_headers,
+                        )
+
+            rl_allowed, rate_headers_main, rl_meta = rate_limiter.check_and_consume(
                 key=rl_key,
                 limit_rpm=limit_rpm,
                 burst_capacity=burst_cap,
                 window_seconds=60,
             )
+            rate_headers.update(rate_headers_main)
             if not rl_allowed:
                 pol_enabled, pol_mode, pol_id = check_policy_mode(session, "rate_limit", rl_owasp)
                 if pol_enabled and pol_mode == "enforce":
@@ -689,6 +837,13 @@ async def execute_gateway_pipeline(
                     threat_score = max(threat_score, 70)
 
         # STAGE 8: Payload & Signature Inspection (SSRF API7, Injection API8, Size/Limit API4, Mass Assignment API3)
+        size_cfg = get_policy_config(session, "size_limit", "API4")
+        rate_cfg = get_policy_config(session, "rate_limit", "API4")
+        ssrf_cfg = get_policy_config(session, "ssrf", "API7")
+        sig_cfg = get_policy_config(session, "signature", "API8")
+        max_body = int(size_cfg.get("max_body_bytes") or rate_cfg.get("max_body_bytes") or 65536)
+        max_page = int(size_cfg.get("max_page_limit") or rate_cfg.get("max_page_limit") or 100)
+
         inspection = (
             {"violation": False, "threat_score": 0}
             if is_swagger_doc_route
@@ -696,6 +851,16 @@ async def execute_gateway_pipeline(
                 path=norm_path,
                 query_string=query_string,
                 body_text=body_text,
+                max_body_bytes=max_body,
+                max_page_limit=max_page,
+                request_schema_json=matched_route.request_schema_json if matched_route else None,
+                headers=req_headers_dict,
+                block_private_cidrs=bool(ssrf_cfg.get("block_private_cidrs", True)),
+                block_metadata_ip=bool(ssrf_cfg.get("block_metadata_ip", True)),
+                enable_sqli=bool(sig_cfg.get("sqli", True)),
+                enable_xss=bool(sig_cfg.get("xss", True)),
+                enable_path_traversal=bool(sig_cfg.get("path_traversal", True)),
+                enable_cmd_injection=bool(sig_cfg.get("cmd_injection", True)),
             )
         )
         if inspection.get("violation"):
@@ -719,13 +884,84 @@ async def execute_gateway_pipeline(
                 matched_policy_id = pol_id
                 threat_score = max(threat_score, inspection.get("threat_score", 85))
 
-        # STAGE 9: Forward to Upstream via Async HTTPX
+        # STAGE 9: Circuit breaker + Forward to Upstream via Async HTTPX
+        upstream_key = f"up-{upstream_id}"
+        cb_ok, cb_reason = circuit_breaker.allow(upstream_key)
+        if not cb_ok:
+            return await reject(
+                503,
+                "blocked",
+                f"Upstream circuit breaker open (OWASP API4): {cb_reason}",
+                "API4",
+                70,
+            )
+
         resp_status, upstream_headers, raw_resp_body = await _forward_to_upstream(
             method, norm_path, query_string, req_headers_dict, raw_body_bytes, upstream, local_asgi_app, user_sub
         )
+        if resp_status >= 500:
+            circuit_breaker.record_failure(upstream_key)
+        else:
+            circuit_breaker.record_success(upstream_key)
+
+        # STAGE 9b: OWASP API10 — unsafe consumption / third-party URL inspection on upstream responses
+        if not is_swagger_doc_route and resp_status < 500:
+            egress_cfg = get_policy_config(session, "egress", "API10")
+            api10_hit = inspect_response_for_unsafe_urls(
+                raw_resp_body,
+                block_private_cidrs=bool(egress_cfg.get("block_private_cidrs", True)),
+                block_metadata_ip=bool(egress_cfg.get("block_metadata_ip", True)),
+            )
+            if api10_hit:
+                pol_enabled, pol_mode, pol_id = check_policy_mode(session, "egress", "API10")
+                if pol_enabled and pol_mode == "enforce":
+                    if egress_cfg.get("strip_unsafe_urls", True):
+                        try:
+                            parsed_resp = json.loads(raw_resp_body)
+                            cleaned, stripped_paths = strip_unsafe_urls_from_json(
+                                parsed_resp,
+                                block_private_cidrs=bool(egress_cfg.get("block_private_cidrs", True)),
+                                block_metadata_ip=bool(egress_cfg.get("block_metadata_ip", True)),
+                            )
+                            if stripped_paths:
+                                raw_resp_body = json.dumps(cleaned)
+                                owasp_id = "API10"
+                                matched_policy_id = pol_id
+                                threat_score = max(threat_score, 90)
+                                block_reason = (
+                                    block_reason
+                                    or f"Stripped unsafe third-party URLs from upstream response: {', '.join(stripped_paths)} (OWASP API10)"
+                                )
+                        except Exception:
+                            return await reject(
+                                api10_hit.get("http_status", 502),
+                                "blocked",
+                                api10_hit["reason"],
+                                "API10",
+                                api10_hit.get("threat_score", 90),
+                                pol_id,
+                            )
+                    else:
+                        return await reject(
+                            api10_hit.get("http_status", 502),
+                            "blocked",
+                            api10_hit["reason"],
+                            "API10",
+                            api10_hit.get("threat_score", 90),
+                            pol_id,
+                        )
+                elif pol_enabled and pol_mode == "monitor":
+                    decision = "monitored"
+                    block_reason = f"[Monitor Mode] {api10_hit['reason']}"
+                    owasp_id = "API10"
+                    matched_policy_id = pol_id
+                    threat_score = max(threat_score, 90)
 
         # STAGE 10: Response Hardening (API8 Headers & Error Sanitization + API3 JSON Field Redaction)
         redact_fields = ["password_hash", "ssn", "credit_card", "secret_note"]
+        red_cfg = get_policy_config(session, "field_redaction", "API3")
+        if red_cfg.get("redact_fields"):
+            redact_fields = list(red_cfg["redact_fields"])
         if matched_route and matched_route.response_redact_fields_json:
             try:
                 redact_fields = json.loads(matched_route.response_redact_fields_json)
@@ -742,6 +978,7 @@ async def execute_gateway_pipeline(
             redact_fields=redact_fields,
             enable_header_hardening=(hdr_pol_enabled and hdr_pol_mode == "enforce"),
             enable_field_redaction=(red_pol_enabled and red_pol_mode == "enforce" and not is_swagger_doc_route),
+            max_response_bytes=int(settings.MAX_UPSTREAM_RESPONSE_BYTES),
         )
         hardened_body, hardened_headers, media_type = _rewrite_swagger_if_needed(
             norm_path, gw_prefix, hardened_body, hardened_headers, upstream, proj_registered_routes
@@ -751,6 +988,25 @@ async def execute_gateway_pipeline(
         hardened_headers.update(rate_headers)
         hardened_headers["X-Request-ID"] = request_id
         hardened_headers["X-Gateway-Decision"] = decision
+
+        # Learn object owners from successful GETs for future BOLA checks
+        if (
+            matched_route
+            and matched_route.bola_check_enabled
+            and method == "GET"
+            and 200 <= resp_status < 300
+            and user_sub
+            and path_params
+        ):
+            owner_param = resolve_bola_owner_param(matched_route, path_params)
+            obj_id = (
+                path_params.get(owner_param)
+                or path_params.get(getattr(matched_route, "bola_owner_param", "id") or "id")
+                or path_params.get("id")
+                or next(iter(path_params.values()), None)
+            )
+            if obj_id:
+                remember_object_owner(upstream_id, matched_route.path_pattern, str(obj_id), user_sub)
 
         if redacted_fields and not owasp_id:
             owasp_id = "API3"
@@ -1033,14 +1289,46 @@ async def _forward_to_upstream(
             return resp.status_code, dict(resp.headers), resp.text
 
     target_url = base_url.rstrip("/") + full_path_with_qs
+    # Trust only this project's configured upstream origin (e.g. localhost:8001).
+    # Request-payload SSRF and redirects to other private hosts remain blocked.
+    trusted_upstream = egress_trust_keys_for_base_url(base_url)
+    egress_err = inspect_egress_destination(target_url, trusted_hosts=trusted_upstream)
+    if egress_err:
+        err_body = json.dumps({"error": "Forbidden Egress", "detail": egress_err})
+        return 403, {"Content-Type": "application/json"}, err_body
+
     try:
         client = get_http_client()
-        resp = await client.request(
-            method=method,
-            url=target_url,
-            headers=forward_headers,
-            content=body_bytes,
-        )
+        current_url = target_url
+        resp = None
+        for _hop in range(5):
+            resp = await client.request(
+                method=method,
+                url=current_url,
+                headers=forward_headers,
+                content=body_bytes,
+            )
+            if resp.status_code not in (301, 302, 303, 307, 308):
+                break
+            location = resp.headers.get("location")
+            if not location:
+                break
+            # Resolve relative redirects against current URL
+            from urllib.parse import urljoin
+            next_url = urljoin(current_url, location)
+            # Same-origin upstream redirects are fine; cross-origin private/metadata still blocked
+            pin_err = inspect_egress_destination(next_url, trusted_hosts=trusted_upstream)
+            if pin_err:
+                err_body = json.dumps({
+                    "error": "Redirect Blocked",
+                    "detail": f"Upstream redirect to restricted destination blocked (OWASP API7/API10): {pin_err}",
+                })
+                return 502, {"Content-Type": "application/json"}, err_body
+            current_url = next_url
+            if resp.status_code in (303,):
+                method = "GET"
+                body_bytes = b""
+        assert resp is not None
         # If the upstream is a static SPA on Vercel/Netlify that returns 405 Method Not Allowed
         # or returns its SPA index.html shell (`content-disposition: inline; filename="index.html"`)
         # for REST API paths, check if it's a Firebase SPA and bridge to Firebase Auth / Firestore REST API!
@@ -1067,7 +1355,7 @@ async def _forward_to_upstream(
                     return bridged
         return resp.status_code, dict(resp.headers), resp.text
     except Exception as exc:
-        err_body = json.dumps({"error": "Bad Gateway", "detail": f"Upstream connection failed: {exc}"})
+        err_body = json.dumps({"error": "Bad Gateway", "detail": "Upstream connection failed"})
         return 502, {"Content-Type": "application/json"}, err_body
 
 

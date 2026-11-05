@@ -113,3 +113,44 @@ def health_check():
         "redis": "up" if redis_ok else ("configured" if redis_configured else "disabled"),
         "rate_limit_backend": rate_limiter.backend_type,
     }
+
+
+@app.get("/metrics")
+def prometheus_metrics():
+    """Lightweight Prometheus text exposition of core gateway counters (no separate stack required)."""
+    from sqlmodel import select, func
+    from app.models import Alert, RequestLog
+
+    with Session(engine) as session:
+        total = session.exec(select(func.count()).select_from(RequestLog)).one()
+        blocked = session.exec(
+            select(func.count()).select_from(RequestLog).where(RequestLog.decision.in_(["blocked", "rate_limited"]))
+        ).one()
+        alerts_open = session.exec(
+            select(func.count()).select_from(Alert).where(Alert.status.in_(["open", "investigating"]))
+        ).one()
+        critical = session.exec(
+            select(func.count()).select_from(Alert).where(Alert.severity == "critical")
+        ).one()
+
+    lines = [
+        "# HELP sentinel_requests_total Total gateway request logs",
+        "# TYPE sentinel_requests_total counter",
+        f"sentinel_requests_total {total}",
+        "# HELP sentinel_blocked_total Blocked or rate-limited requests",
+        "# TYPE sentinel_blocked_total counter",
+        f"sentinel_blocked_total {blocked}",
+        "# HELP sentinel_alerts_open Open or investigating alerts",
+        "# TYPE sentinel_alerts_open gauge",
+        f"sentinel_alerts_open {alerts_open}",
+        "# HELP sentinel_alerts_critical Critical severity alerts",
+        "# TYPE sentinel_alerts_critical gauge",
+        f"sentinel_alerts_critical {critical}",
+        "# HELP sentinel_rate_limit_backend 1=redis 0=memory",
+        "# TYPE sentinel_rate_limit_backend gauge",
+        f'sentinel_rate_limit_backend{{backend="{rate_limiter.backend_type}"}} '
+        f"{1 if rate_limiter.backend_type == 'redis' else 0}",
+    ]
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")

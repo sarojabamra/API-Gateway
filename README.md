@@ -6,20 +6,19 @@
 
 ## Architecture Highlights
 
-1. **10-Stage Reverse Proxy Security Pipeline (`/gw/{path:path}`)**
+1. **10-Stage Reverse Proxy Security Pipeline (**`/gw/{path:path}`**)**
    - **Stage 1 — Context & Correlation**: Assigns `X-Request-ID` UUID, client IP extraction, and high-precision latency timer.
    - **Stage 2 — Blocklist Quarantine**: Instant `403` rejection for blocked IPs, users, or API keys.
-   - **Stage 3 — Route Matching & Shadow API Discovery (`API9:2023`)**: Matches against the registered route inventory and flags undocumented/legacy endpoints.
-   - **Stage 4 — 8-Step Cryptographic JWT & API Key Validator (`API2:2023`)**: Enforces `alg` whitelist (blocks `alg:none`), HMAC signature verification, `exp`, `nbf`, `iat` (+30s skew limit), `iss`, `aud`, and `jti` revocation check.
-   - **Stage 5 — Object & Function Level Authorization (`API1:2023` BOLA & `API5:2023` BFLA)**: Enforces role RBAC (`admin` vs `customer`) and verifies JWT `sub` ownership against path `{id}` parameters.
-   - **Stage 6 — Hybrid Rate Limiter (`API4:2023` & `API6:2023`)**: Redis **fixed-window counter** for sustained RPM plus a Redis **token bucket** for burst control, with `X-RateLimit-*` and `Retry-After` headers. Burst detection keeps per-client 15-second counts and history in Redis and scores them with a rolling Z-score.
-   - **Stage 7 — Deep Payload & Query Inspector (`API3`, `API4`, `API7`, `API8`)**: Blocks SSRF internal IP/metadata targets, SQLi/NoSQLi/XSS/Command Injection/Path Traversal, Mass Assignment fields (`role`, `is_admin`, `balance`), and excessive pagination (`?limit=5000`).
-   - **Stage 8 — Async Upstream Forwarding**: Proxies validated requests to the target upstream (`VulnShop`).
-   - **Stage 9 — Response Hardening & PII Redaction (`API3:2023` & `API8:2023`)**: Strips sensitive fields (`password_hash`, `ssn`, `secret_mfa_seed`, `credit_card_last4`), removes leaky `Server`/`X-Powered-By` headers, injects `CSP`/`HSTS`/`X-Frame-Options`, and sanitizes `500` stack traces.
-   - **Stage 10 — Real-Time Threat Detection & WebSocket Broadcast**: Evaluates 12 behavioral/signature rules + rolling Z-score client baseline ($Z = \frac{x - \mu}{\sigma}$), deduplicates alerts, auto-blocks critical offenders, and streams events over `/ws/live`.
-
-2. **Intentionally Vulnerable Target API (`VulnShop` at `/demo/*`)**
-   - Built-in e-commerce API containing 9 exploitable OWASP API Top 10 vulnerabilities. Use the **Gateway ON/OFF Switch** in the Attack Simulator to compare unprotected exploit output against gateway-protected responses side by side.
+   - **Stage 3 — Route Matching & Shadow API Discovery (**`API9:2023`**)**: Matches against the registered route inventory and flags undocumented/legacy endpoints.
+   - **Stage 4 — 8-Step Cryptographic JWT & API Key Validator (**`API2:2023`**)**: Enforces `alg` whitelist (blocks `alg:none`), HMAC signature verification, `exp`, `nbf`, `iat` (+30s skew limit), `iss`, `aud`, and `jti` revocation check.
+   - **Stage 5 — Object & Function Level Authorization (**`API1:2023` **BOLA &** `API5:2023` **BFLA)**: Enforces role/scope RBAC and verifies JWT owner claims against path, query, and body object IDs (with learned-owner cache + enumeration caps).
+   - **Stage 6 — Hybrid Rate Limiter (**`API4:2023` **&** `API6:2023`**)**: Redis **fixed-window counter** for sustained RPM plus a Redis **token bucket** for burst control, with per-principal sensitive-flow caps, `X-RateLimit-`*, and `Retry-After` headers.
+   - **Stage 7 — Deep Payload & Query Inspector (**`API3`**,** `API4`**,** `API7`**,** `API8`**)**: JSON Schema validation, nested mass-assignment blocking, DNS-resolved SSRF (incl. decimal/IPv4-mapped IPs), normalized SQLi/XSS/traversal signatures, and policy-driven size/pagination caps.
+   - **Stage 8 — Async Upstream Forwarding**: Proxies via a pooled HTTPX client with per-upstream circuit breaker and private-IP redirect pinning.
+   - **Stage 9 — Response Hardening, PII Redaction & Unsafe Consumption (**`API3`**,** `API8`**,** `API10`**)**: Strips sensitive fields and pattern-matched SSN/PAN values, sanitizes all 5xx bodies, and strips/blocks third-party webhook URLs targeting private/metadata hosts.
+   - **Stage 10 — Real-Time Threat Detection & WebSocket Broadcast**: Evaluates behavioral/signature rules + rolling Z-score baselines, deduplicates alerts, optional critical-alert webhooks, and streams events over `/ws/live`.
+2. **Intentionally Vulnerable Target API (**`VulnShop` **at** `/demo/`***)**
+   - Built-in e-commerce API covering **all 10** OWASP API Top 10 categories (including `/supplier/catalog` for API10). Use the **Gateway ON/OFF Switch** in the Attack Simulator to compare unprotected exploit output against gateway-protected responses side by side.
 
 ---
 
@@ -41,7 +40,7 @@ npm install
 npm run dev
 ```
 
-Open **`http://localhost:5173`** and click any of the **4 Demo Persona Cards** on the login page.
+Open `http://localhost:5173` and click any of the **4 Demo Persona Cards** on the login page.
 
 ### Option B: Docker Compose (Postgres, Redis, multiple workers)
 
@@ -69,21 +68,21 @@ Local development without Docker still uses SQLite. Set `REDIS_URL` and a Postgr
 
 ## How to Use SentinelGW by Role
 
-- **Platform Administrator (`admin@sentinel.local`)**:
+- **Platform Administrator**:
   - Manage users and RBAC roles in **Users & Access** (`/settings`) and reset or re-seed telemetry data.
   - Control the Gateway Master Protection Switch (`ON`/`OFF`) in the top bar or Attack Simulator.
   - Configure global and per-project JWT signing secrets, issuer/audience binding, and automated blocklist rules.
-- **SOC Security Analyst (`analyst@sentinel.local`)**:
+- **SOC Security Analyst**:
   - Monitor real-time traffic in **Overview** (`/`) and **Live Traffic** (`/traffic`).
   - Investigate correlated incidents in **Security Alerts** (`/alerts/:id`) and review automated triage findings.
   - Execute containment actions: block offending IPs, block user principals, or revoke JWT `jti` identifiers.
   - Tune policies between `Monitor` (dry-run) and `Enforce` (block) in **Security Policies** (`/policies`).
-- **API Owner / Developer (`dev@sentinel.local`)**:
+- **API Owner / Developer**:
   - Register upstream APIs and import OpenAPI 3.0 JSON/YAML specs in **API Inventory** (`/inventory`).
   - Review discovered Shadow APIs (`OWASP API9`) and register or block undocumented routes.
   - Configure per-route rate limits and token bucket bursts (`/rate-limits`) and test burst behavior.
   - Validate tokens with the 8-step JWT Token Tester (`/auth-settings`) and manage consumer API keys.
-- **Compliance Auditor (`viewer@sentinel.local`)**:
+- **Compliance Auditor**:
   - Audit OWASP API Security Top 10 (2023) coverage in **OWASP Top 10** (`/owasp`).
   - Review `p50`/`p95`/`p99` gateway latency percentiles and client rate anomalies in **Analytics** (`/analytics`).
   - Export CSV traffic/alert logs and printable summary reports in **Reports** (`/reports`).

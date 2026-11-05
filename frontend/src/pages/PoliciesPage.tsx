@@ -253,6 +253,10 @@ export const PoliciesPage: React.FC = () => {
                     <option value="ssrf">ssrf</option>
                     <option value="field_redaction">field_redaction</option>
                     <option value="size_limit">size_limit</option>
+                    <option value="shadow_api">shadow_api</option>
+                    <option value="egress">egress</option>
+                    <option value="header_hardening">header_hardening</option>
+                    <option value="auth">auth</option>
                   </select>
                 </div>
                 <div>
@@ -262,7 +266,7 @@ export const PoliciesPage: React.FC = () => {
                     onChange={(e) => setNewOwasp(e.target.value)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-white"
                   >
-                    {['API1', 'API2', 'API3', 'API4', 'API5', 'API6', 'API7', 'API8', 'API9'].map((o) => (
+                    {['API1', 'API2', 'API3', 'API4', 'API5', 'API6', 'API7', 'API8', 'API9', 'API10'].map((o) => (
                       <option key={o} value={o}>
                         {o}
                       </option>

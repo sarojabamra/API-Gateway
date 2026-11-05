@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Users, RotateCcw, Plus, Building2 } from 'lucide-react';
+import { Users, RotateCcw, Plus, Building2, Shield, Power } from 'lucide-react';
 import { apiFetch, formatDateTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
+import { LoadError } from '../components/shared/LoadError';
 
 export const SettingsUsersPage: React.FC = () => {
-  const { user, addToast, canMutate } = useGatewayStore();
+  const { user, addToast, canMutate, setGatewayEnabled } = useGatewayStore();
   const [data, setData] = useState<any | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [newEmail, setNewEmail] = useState('');
   const [newName, setNewName] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -16,8 +18,9 @@ export const SettingsUsersPage: React.FC = () => {
     try {
       const res = await apiFetch('/settings');
       setData(res);
-    } catch {
-      // ignore
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err?.message || 'Failed to load settings');
     }
   };
 
@@ -76,6 +79,49 @@ export const SettingsUsersPage: React.FC = () => {
 
   const orgName = data?.organization?.name || user?.organization_name || 'Your organization';
 
+  const system = data?.system;
+
+  const handleAutoBlockToggle = async () => {
+    if (!system) return;
+    try {
+      await apiFetch('/blocklist/auto-config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          auto_block_critical: !system.auto_block_critical,
+          auto_block_duration_minutes: system.auto_block_duration_minutes || 60,
+        }),
+      });
+      addToast({
+        title: 'Auto-Block Updated',
+        message: `Critical auto-block is now ${!system.auto_block_critical ? 'ON' : 'OFF'}`,
+        severity: 'info',
+      });
+      fetchSettings();
+    } catch (err: any) {
+      addToast({ title: 'Update Failed', message: err.message, severity: 'high' });
+    }
+  };
+
+  const handleGatewayToggle = async () => {
+    if (!system) return;
+    try {
+      const next = !system.gateway_enabled;
+      await apiFetch('/simulator/gateway-toggle', {
+        method: 'POST',
+        body: JSON.stringify({ gateway_enabled: next }),
+      });
+      setGatewayEnabled(next);
+      addToast({
+        title: 'Gateway Protection',
+        message: `Master switch is now ${next ? 'ON' : 'OFF'}`,
+        severity: next ? 'info' : 'high',
+      });
+      fetchSettings();
+    } catch (err: any) {
+      addToast({ title: 'Toggle Failed', message: err.message, severity: 'high' });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
@@ -100,6 +146,65 @@ export const SettingsUsersPage: React.FC = () => {
           </button>
         )}
       </div>
+
+      {loadError && <LoadError message={loadError} onRetry={fetchSettings} />}
+
+      {system && (
+        <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <Shield className="w-4 h-4 text-cyan-400" />
+            Gateway Runtime Settings
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div className="rounded-lg bg-slate-950/80 border border-slate-800 p-3">
+              <div className="text-slate-400 mb-1">Master Protection</div>
+              <div className="flex items-center justify-between gap-2">
+                <span className={system.gateway_enabled ? 'text-emerald-300 font-semibold' : 'text-rose-300 font-semibold'}>
+                  {system.gateway_enabled ? 'ON' : 'OFF'}
+                </span>
+                {canMutate(['admin', 'analyst']) && (
+                  <button
+                    type="button"
+                    onClick={handleGatewayToggle}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-800 text-slate-200"
+                  >
+                    <Power className="w-3 h-3" /> Toggle
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="rounded-lg bg-slate-950/80 border border-slate-800 p-3">
+              <div className="text-slate-400 mb-1">Auto-Block Critical</div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-slate-200 font-semibold">
+                  {system.auto_block_critical ? 'Enabled' : 'Disabled'}
+                </span>
+                {canMutate(['admin', 'analyst']) && (
+                  <button
+                    type="button"
+                    onClick={handleAutoBlockToggle}
+                    className="px-2 py-1 rounded bg-slate-800 text-slate-200"
+                  >
+                    Toggle
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="rounded-lg bg-slate-950/80 border border-slate-800 p-3">
+              <div className="text-slate-400 mb-1">Auto-Block Duration</div>
+              <div className="text-slate-200 font-semibold">{system.auto_block_duration_minutes || 60} min</div>
+            </div>
+            <div className="rounded-lg bg-slate-950/80 border border-slate-800 p-3">
+              <div className="text-slate-400 mb-1">Anomaly Z-Score Threshold</div>
+              <div className="text-slate-200 font-semibold">{system.anomaly_zscore_threshold ?? 3}</div>
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Retention window: {system.retention_days || 30} days. Optional critical-alert webhook is configured via{' '}
+            <code className="text-cyan-400">WEBHOOK_URL</code> on the backend.
+          </p>
+        </div>
+      )}
 
       {data?.organization && (
         <div className="p-4 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center gap-3">

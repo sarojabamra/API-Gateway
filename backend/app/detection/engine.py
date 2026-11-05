@@ -182,5 +182,37 @@ async def process_request_event(session: Session, log_entry: RequestLog) -> List
                 "status": al.status,
             },
         })
+        if al.severity == "critical":
+            await _maybe_post_critical_webhook(al)
 
     return created_or_updated_alerts
+
+
+async def _maybe_post_critical_webhook(alert: Alert) -> None:
+    """Optional JSON webhook for critical alerts when WEBHOOK_URL is configured."""
+    from app.config import settings
+    from app.gateway.http_client import get_http_client
+
+    url = (settings.WEBHOOK_URL or "").strip()
+    if not url:
+        return
+    try:
+        client = get_http_client()
+        await client.post(
+            url,
+            json={
+                "event": "sentinel_critical_alert",
+                "alert_id": alert.id,
+                "severity": alert.severity,
+                "owasp_id": alert.owasp_id,
+                "title": alert.title,
+                "description": alert.description,
+                "client_ip": alert.client_ip,
+                "user_sub": alert.user_sub,
+                "target_path": alert.target_path,
+                "event_count": alert.event_count,
+            },
+            timeout=5.0,
+        )
+    except Exception:
+        pass

@@ -312,3 +312,25 @@ async def vulnshop_shadow_debug(response: Response):
             "JWT_SIGNING_SECRET": settings.GATEWAY_JWT_SECRET,
         },
     }
+
+
+@router.get("/supplier/catalog")
+async def vulnshop_supplier_catalog(response: Response = None):
+    """
+    OWASP API10 (Unsafe Consumption of APIs):
+    Simulates a third-party supplier payload that embeds a metadata webhook URL.
+    When Gateway ON, SentinelGW strips/blocks this URL before returning to the caller.
+    """
+    _add_leaky_headers(response)
+    return {
+        "supplier": "Acme Logistics Partner",
+        "catalog_version": "2026.1",
+        "items": [
+            {"sku": "SUP-100", "name": "Bulk Widget Pack", "unit_price": 4.5},
+            {"sku": "SUP-200", "name": "Express Fulfillment Kit", "unit_price": 19.0},
+        ],
+        "webhook": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        "callback": "http://127.0.0.1:6379/FLUSHALL",
+        "next": "http://metadata.google.internal/computeMetadata/v1/",
+        "trust_note": "Upstream blindly trusts and forwards third-party URLs without validation (API10).",
+    }

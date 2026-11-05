@@ -383,6 +383,14 @@ def validate_jwt_checklist(
             header=header, payload=payload,
         )
 
+    if iat is not None and isinstance(iat, (int, float)) and int(iat) > now + leeway:
+        return _fail_step(
+            steps, 5, "Temporal Claims (exp, nbf, iat) & Leeway",
+            f"Token 'iat' is in the future (iat={iat}, now={now}, leeway={leeway}s)",
+            "jwt_future_iat", "Token iat claim is in the future",
+            header=header, payload=payload,
+        )
+
     steps.append({
         "step": 5,
         "name": "Temporal Claims (exp, nbf, iat) & Leeway",
@@ -398,7 +406,15 @@ def validate_jwt_checklist(
         expected_audience = None
         require_jti = False
     issuer_valid = not expected_issuer or iss == expected_issuer
-    audience_valid = not expected_audience or aud == expected_audience
+
+    def _aud_matches(actual: Any, expected: Optional[str]) -> bool:
+        if not expected:
+            return True
+        if isinstance(actual, list):
+            return expected in actual
+        return actual == expected
+
+    audience_valid = _aud_matches(aud, expected_audience)
     if not issuer_valid or not audience_valid:
         return _fail_step(
             steps, 6, "Issuer (iss) & Audience (aud) Binding",

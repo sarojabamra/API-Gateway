@@ -49,6 +49,11 @@ OWASP_KNOWLEDGE_BASE: Dict[str, Dict[str, str]] = {
         "root_cause": "Legacy, debug, or undocumented endpoints (/internal/debug, /.env) left exposed on the upstream service outside the official OpenAPI specification.",
         "impact": "Unmonitored access to environment variables, database credentials, and unpatched debug utilities.",
     },
+    "API10": {
+        "name": "API10:2023 - Unsafe Consumption of APIs",
+        "root_cause": "Upstream or third-party payloads contain private/metadata webhook URLs, or the gateway follows redirects to restricted destinations without validation.",
+        "impact": "SSRF-style credential theft via trusted supplier responses, lateral movement, and silent exfiltration through callback fields.",
+    },
 }
 
 

@@ -110,6 +110,14 @@ def test_end_to_end_gateway_and_control_plane():
         owasp = client.get("/api/v1/owasp/coverage", headers=headers)
         assert owasp.status_code == 200
         assert len(owasp.json()["cards"]) == 10
+        assert owasp.json()["total_in_scope_count"] == 10
+        api10 = next(c for c in owasp.json()["cards"] if c["owasp_id"] == "API10")
+        assert api10["in_scope"] is True
+        assert api10["protection_status"] in ("enforcing", "monitoring")
+
+        metrics = client.get("/metrics")
+        assert metrics.status_code == 200
+        assert "sentinel_requests_total" in metrics.text
 
         # 4. Verify 8-Step JWT Token Tester presets
         jwt_test = client.post("/api/v1/auth/jwt-test", json={"preset": "alg_none"}, headers=headers)
@@ -150,11 +158,22 @@ def test_end_to_end_gateway_and_control_plane():
         assert ssrf_on.status_code == 200
         assert ssrf_on.json()["blocked_count"] >= 1
 
-        # Excessive Data Exposure redacted when Gateway ON
+        # Excessive Data Exposure redacted when Gateway ON (+ nested mass assignment blocked)
         redact_on = client.post("/api/v1/simulator/run", json={"scenario_id": "data_exposure"}, headers=headers)
         assert redact_on.status_code == 200
         preview_on = redact_on.json()["steps"][0]["response_preview"]
         assert "REDACTED BY GATEWAY" in preview_on
+        assert redact_on.json()["blocked_count"] >= 1  # mass assignment steps
+
+        # API10 unsafe third-party URLs stripped when Gateway ON
+        api10_on = client.post(
+            "/api/v1/simulator/run",
+            json={"scenario_id": "unsafe_api_consume"},
+            headers=headers,
+        )
+        assert api10_on.status_code == 200
+        api10_preview = api10_on.json()["steps"][0]["response_preview"]
+        assert "STRIPPED BY GATEWAY API10" in api10_preview or api10_on.json()["blocked_count"] >= 1
 
         # Toggle Gateway OFF and verify pass-through exposes VulnShop vulnerabilities
         client.post("/api/v1/simulator/gateway-toggle", json={"gateway_enabled": False}, headers=headers)
@@ -162,6 +181,14 @@ def test_end_to_end_gateway_and_control_plane():
         assert redact_off.status_code == 200
         preview_off = redact_off.json()["steps"][0]["response_preview"]
         assert "REDACTED BY GATEWAY" not in preview_off
+
+        api10_off = client.post(
+            "/api/v1/simulator/run",
+            json={"scenario_id": "unsafe_api_consume"},
+            headers=headers,
+        )
+        assert api10_off.status_code == 200
+        assert "169.254.169.254" in api10_off.json()["steps"][0]["response_preview"]
 
         # Restore Gateway ON
         client.post("/api/v1/simulator/gateway-toggle", json={"gateway_enabled": True}, headers=headers)

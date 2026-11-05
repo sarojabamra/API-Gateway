@@ -12,7 +12,7 @@ OWASP_TOP_10_2023: List[Dict[str, Any]] = [
         "code": "API1:2023",
         "title": "Broken Object Level Authorization (BOLA)",
         "risk_summary": "Attackers substitute object IDs in URL paths (/users/{id}, /orders/{id}) to access other users' records.",
-        "gateway_mitigation": "Enforces JWT `sub` to path `{id}` ownership binding and detects high-velocity sequential ID enumeration across routes.",
+        "gateway_mitigation": "Compares configurable owner claims to path/query/body object IDs, learns owners from successful GETs, and enforces distinct-ID enumeration caps.",
         "demo_endpoint": "GET /gw/users/{id}, GET /gw/orders/{id}",
         "simulator_scenario": "bola_enum",
         "in_scope": True,
@@ -32,7 +32,7 @@ OWASP_TOP_10_2023: List[Dict[str, Any]] = [
         "code": "API3:2023",
         "title": "Broken Object Property Level Authorization",
         "risk_summary": "Excessive data exposure in API responses (leaking password_hash, SSN, credit_card) and Mass Assignment of privileged fields.",
-        "gateway_mitigation": "Response JSON property redaction filter strips sensitive fields automatically; request inspector blocks mass-assigned `role=admin` / `is_admin` fields.",
+        "gateway_mitigation": "Recursive mass-assignment blocking, OpenAPI request schema validation, response field redaction, and SSN/PAN pattern masking.",
         "demo_endpoint": "GET /gw/users/me, POST /gw/auth/register, POST /gw/orders",
         "simulator_scenario": "data_exposure",
         "in_scope": True,
@@ -72,7 +72,7 @@ OWASP_TOP_10_2023: List[Dict[str, Any]] = [
         "code": "API7:2023",
         "title": "Server-Side Request Forgery (SSRF)",
         "risk_summary": "API fetches attacker-controlled URLs (?url=) targeting cloud metadata (169.254.169.254), localhost, or internal VPC services.",
-        "gateway_mitigation": "Deep URL parameter & JSON body inspector blocking RFC1918 private IPs, loopback, link-local cloud metadata, and non-HTTP schemes.",
+        "gateway_mitigation": "DNS-resolved SSRF checks (decimal/hex/IPv4-mapped normalization), nested JSON URL walking, and private-IP redirect pinning on egress.",
         "demo_endpoint": "GET /gw/fetch?url=http://169.254.169.254/latest/meta-data/",
         "simulator_scenario": "ssrf_metadata",
         "in_scope": True,
@@ -101,11 +101,11 @@ OWASP_TOP_10_2023: List[Dict[str, Any]] = [
         "owasp_id": "API10",
         "code": "API10:2023",
         "title": "Unsafe Consumption of APIs",
-        "risk_summary": "Backend service blindly trusting data returned from third-party outbound integrations without validation.",
-        "gateway_mitigation": "Architectural Out-of-Scope for an inbound reverse proxy (requires egress proxy / outbound SDK instrumentation; documented in roadmap).",
-        "demo_endpoint": "N/A (Outbound Third-Party Egress)",
-        "simulator_scenario": None,
-        "in_scope": False,
+        "risk_summary": "Backend blindly trusts third-party / supplier JSON containing private webhook URLs, redirects to metadata, or oversized nested payloads.",
+        "gateway_mitigation": "Inspects upstream JSON responses for URL-like fields, DNS-resolves destinations, strips or blocks private/metadata targets, and pin-checks gateway-originated egress redirects.",
+        "demo_endpoint": "GET /gw/supplier/catalog",
+        "simulator_scenario": "unsafe_api_consume",
+        "in_scope": True,
     },
 ]
 
@@ -153,10 +153,11 @@ def get_owasp_coverage(session: Session = Depends(get_session)):
         })
 
     protected_categories = sum(1 for c in cards if c["protection_status"] in ("enforcing", "monitoring"))
+    in_scope_total = sum(1 for c in cards if c["in_scope"])
     return {
         "edition": "OWASP API Security Top 10 (2023 Final Edition)",
         "protected_in_scope_count": protected_categories,
-        "total_in_scope_count": 9,
-        "posture_score": round((protected_categories / 9.0) * 100),
+        "total_in_scope_count": in_scope_total,
+        "posture_score": round((protected_categories / float(max(1, in_scope_total))) * 100),
         "cards": cards,
     }

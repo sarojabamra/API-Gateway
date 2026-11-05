@@ -10,6 +10,14 @@ _INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS ix_blocklist_type_value_active ON blocklist (target_type, value, active)",
 )
 
+# Columns introduced after initial schema — added via ALTER when missing (SQLite + Postgres).
+_ROUTE_EXTRA_COLUMNS = (
+    ("bola_owner_claim", "VARCHAR", "'sub'"),
+    ("bola_owner_param", "VARCHAR", "'id'"),
+    ("bola_mode", "VARCHAR", "'equals_sub'"),
+    ("request_schema_json", "TEXT", None),
+)
+
 
 def _build_engine():
     url = settings.DATABASE_URL
@@ -50,24 +58,43 @@ def _ensure_indexes() -> None:
             conn.execute(text(statement))
 
 
-def _ensure_sqlite_columns() -> None:
-    """Add newly introduced columns to existing SQLite tables without wiping data."""
-    if not settings.DATABASE_URL.startswith("sqlite"):
-        return
+def _add_column_if_missing(table: str, column: str, col_type: str, default_sql: str | None = None) -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
-    if "users" not in tables:
+    if table not in tables:
         return
-    columns = {col["name"] for col in inspector.get_columns("users")}
+    columns = {col["name"] for col in inspector.get_columns(table)}
+    if column in columns:
+        return
+    default_clause = f" DEFAULT {default_sql}" if default_sql is not None else ""
     with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}{default_clause}"))
+
+
+def _ensure_extra_columns() -> None:
+    """Add newly introduced columns without wiping existing data (SQLite and Postgres)."""
+    inspector = inspect(engine)
+    tables = set(inspector.get_table_names())
+    if "users" in tables:
+        columns = {col["name"] for col in inspector.get_columns("users")}
         if "organization_id" not in columns:
-            conn.execute(text("ALTER TABLE users ADD COLUMN organization_id INTEGER"))
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE users ADD COLUMN organization_id INTEGER"))
+
+    for col_name, col_type, default_sql in _ROUTE_EXTRA_COLUMNS:
+        _add_column_if_missing("routes", col_name, col_type, default_sql)
+
+    if "upstreams" in tables:
+        up_cols = {col["name"] for col in inspector.get_columns("upstreams")}
+        if "openapi_spec_json" not in up_cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE upstreams ADD COLUMN openapi_spec_json TEXT"))
 
 
 def create_db_and_tables() -> None:
     SQLModel.metadata.create_all(engine)
     _configure_sqlite()
-    _ensure_sqlite_columns()
+    _ensure_extra_columns()
     _ensure_indexes()
 
 

@@ -114,7 +114,7 @@ Follow this exact sequence to experience the full closed-loop lifecycle (**Unpro
 
 #### Step-by-Step Workflows:
 1. **Audit OWASP API Top 10 Coverage (`/owasp`)**
-   - Review all 10 categories (`API1:2023` through `API10:2023`), including active enforcing rule counts, 24-hour blocked event metrics, and the explicit architectural scope note for `API10:2023`.
+   - Review all 10 categories (`API1:2023` through `API10:2023`), including active enforcing rule counts, 24-hour blocked event metrics, and `API10:2023` unsafe third-party URL stripping on upstream responses (e.g. `/gw/supplier/catalog`).
 2. **Generate & Export Compliance Reports (`/reports`)**
    - Open **Compliance Reports (`/reports`)** to view the **Overall Security Posture Score** and incident breakdown.
    - Click **Export Traffic (CSV)**, **Export Alerts (CSV)**, or **Print / Save PDF Report**.

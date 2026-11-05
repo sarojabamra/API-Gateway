@@ -84,6 +84,10 @@ class Route(SQLModel, table=True):
     burst_capacity: int = Field(default=15)
     is_sensitive_flow: bool = Field(default=False)  # OWASP API6
     bola_check_enabled: bool = Field(default=False)  # OWASP API1
+    bola_owner_claim: str = Field(default="sub")  # JWT claim compared for ownership
+    bola_owner_param: str = Field(default="id")  # path/query/body param holding the object id
+    # equals_sub = path id is the user; learned_owner = resource id with owner map/cache
+    bola_mode: str = Field(default="equals_sub")
     request_schema_json: Optional[str] = Field(default=None)
     response_redact_fields_json: str = Field(default='["password_hash", "ssn", "credit_card", "secret_note"]')  # OWASP API3
     registered: bool = Field(default=True, index=True)  # False = discovered Shadow API (OWASP API9)
@@ -99,7 +103,7 @@ class Policy(SQLModel, table=True):
     type: str = Field(index=True)  # rate_limit, auth, bola, bfla, ip_filter, size_limit, content_type, signature, ssrf, header_hardening, field_redaction, shadow_api
     scope: str = Field(default="global")  # global, upstream, route
     target_id: Optional[int] = Field(default=None)
-    owasp_id: str = Field(index=True)  # API1 .. API9
+    owasp_id: str = Field(index=True)  # API1 .. API10
     mode: str = Field(default="enforce")  # enforce, monitor (dry-run)
     config_json: str = Field(default="{}")
     enabled: bool = Field(default=True)

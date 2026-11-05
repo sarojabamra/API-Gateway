@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from sqlmodel import Session
+from sqlmodel import Session, select
 from app.db import get_session
-from app.models import Upstream
+from app.models import Route, Upstream
 from pydantic import BaseModel
 from app.models import User
 from app.schemas import SimulatorRunRequest, SimulatorTokenValidateRequest
 from app.api.v1.deps import require_roles
 from app.attack_sim.scenarios import SCENARIO_CATALOG, execute_attack_scenario
+from app.attack_sim.targeting import list_scenario_route_options, plan_scenario_targets
 from app.gateway.auth import resolve_simulator_user_jwt
 from app.gateway.pipeline import gateway_state
 
@@ -21,6 +22,35 @@ def list_attack_scenarios(
     upstream = session.get(Upstream, upstream_id)
     if not upstream:
         raise HTTPException(status_code=404, detail="Selected API project was not found")
+    routes = session.exec(
+        select(Route).where(Route.upstream_id == upstream_id, Route.registered == True)
+    ).all()
+    enriched = []
+    for sc in SCENARIO_CATALOG:
+        plan = plan_scenario_targets(sc["id"], routes)
+        selectable = list_scenario_route_options(sc["id"], routes)
+        auto_targets = []
+        for role, sel in plan.selections.items():
+            if sel.route is None:
+                continue
+            auto_targets.append(
+                {
+                    "role": role,
+                    "route_id": sel.route.id,
+                    "method": sel.route.method,
+                    "path_pattern": sel.route.path_pattern,
+                    "reason": sel.reason,
+                }
+            )
+        enriched.append(
+            {
+                **sc,
+                "applicable": plan.applicable,
+                "skip_reason": plan.skip_reason,
+                "auto_targets": auto_targets,
+                "selectable_roles": selectable,
+            }
+        )
     return {
         "gateway_enabled": gateway_state.gateway_enabled,
         "upstream": {
@@ -28,7 +58,7 @@ def list_attack_scenarios(
             "name": upstream.name,
             "slug": upstream.slug,
         },
-        "scenarios": SCENARIO_CATALOG,
+        "scenarios": enriched,
     }
 
 
@@ -81,6 +111,8 @@ async def run_attack_simulation(
             request.app,
             payload.upstream_id,
             payload.auth_token,
+            payload.route_id,
+            payload.route_overrides,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

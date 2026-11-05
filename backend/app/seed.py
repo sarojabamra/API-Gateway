@@ -28,6 +28,10 @@ DEMO_ORG_NAME = "Sentinel Demo"
 
 def backfill_route_security_defaults(session: Session) -> None:
     """Apply safe inferred defaults to routes imported before metadata inference existed."""
+    import re
+    from app.gateway.policy_engine import is_user_like_param
+    from app.runtime_cache import runtime_cache
+
     changed = False
     for route in session.exec(select(Route).where(Route.registered == True)).all():
         inferred = infer_route_security(route.path_pattern)
@@ -36,9 +40,51 @@ def backfill_route_security_defaults(session: Session) -> None:
             route.required_role = inferred["required_role"]
             route.auth_required = True
             route_changed = True
+        # Disable BOLA on admin / public routes (BFLA or open access instead).
+        if route.bola_check_enabled and not inferred["bola_check_enabled"]:
+            route.bola_check_enabled = False
+            route_changed = True
         if inferred["bola_check_enabled"] and not route.bola_check_enabled:
             route.bola_check_enabled = True
             route_changed = True
+        if inferred.get("bola_owner_param") and not getattr(route, "bola_owner_param", None):
+            route.bola_owner_param = inferred["bola_owner_param"]
+            route.bola_owner_claim = inferred.get("bola_owner_claim", "sub")
+            route_changed = True
+        # Fix stale bola_owner_param (e.g. stored "id" but path is {userId}).
+        pattern_params = re.findall(r"\{([^}]+)\}", route.path_pattern or "")
+        stored_param = getattr(route, "bola_owner_param", None) or "id"
+        stored_norm = re.sub(r"[^a-z0-9]", "", stored_param.lower())
+        pattern_norms = {re.sub(r"[^a-z0-9]", "", p.lower()): p for p in pattern_params}
+        if pattern_params and stored_norm not in pattern_norms:
+            route.bola_owner_param = inferred.get("bola_owner_param") or pattern_params[0]
+            route.bola_owner_claim = inferred.get("bola_owner_claim", "sub") or "sub"
+            route_changed = True
+        elif inferred.get("bola_owner_param") and is_user_like_param(
+            inferred["bola_owner_param"], route.path_pattern
+        ):
+            # Prefer explicit userId/user_id over generic id when both could apply
+            if stored_norm == "id" and re.sub(r"[^a-z0-9]", "", inferred["bola_owner_param"].lower()) != "id":
+                route.bola_owner_param = inferred["bola_owner_param"]
+                route_changed = True
+        inferred_mode = inferred.get("bola_mode")
+        current_mode = getattr(route, "bola_mode", None) or ""
+        # Backfill missing/legacy modes; do not clobber an explicit learned_owner setting.
+        if inferred_mode and current_mode not in ("equals_sub", "learned_owner"):
+            route.bola_mode = inferred_mode
+            route_changed = True
+        elif inferred_mode == "learned_owner" and current_mode == "equals_sub" and route.bola_check_enabled:
+            # Correct legacy equals_sub on resource routes (e.g. /bookings/{bookingId}).
+            param = route.bola_owner_param or inferred.get("bola_owner_param") or "id"
+            if not is_user_like_param(param, route.path_pattern):
+                route.bola_mode = "learned_owner"
+                route.bola_owner_param = param
+                route_changed = True
+        elif inferred_mode == "equals_sub" and current_mode == "learned_owner":
+            param = route.bola_owner_param or inferred.get("bola_owner_param") or "id"
+            if is_user_like_param(param, route.path_pattern):
+                route.bola_mode = "equals_sub"
+                route_changed = True
         if inferred["is_sensitive_flow"] and not route.is_sensitive_flow:
             route.is_sensitive_flow = True
             route.rate_limit_rpm = min(route.rate_limit_rpm, inferred["rate_limit_rpm"])
@@ -55,8 +101,57 @@ def backfill_route_security_defaults(session: Session) -> None:
             )
             session.add(policy)
             changed = True
+
+    # Ensure API10 egress policy exists on upgraded databases
+    api10 = session.exec(select(Policy).where(Policy.owasp_id == "API10")).first()
+    if not api10:
+        session.add(
+            Policy(
+                name="Unsafe Third-Party / Upstream Payload Egress Guard",
+                description="Inspects upstream JSON for private/metadata webhook URLs, strips or blocks them, and pin-checks gateway egress redirects (OWASP API10).",
+                type="egress",
+                scope="global",
+                owasp_id="API10",
+                mode="enforce",
+                config_json=json.dumps({
+                    "strip_unsafe_urls": True,
+                    "block_private_cidrs": True,
+                    "block_metadata_ip": True,
+                    "max_response_bytes": 1048576,
+                }),
+                enabled=True,
+            )
+        )
+        changed = True
+
+    # Ensure supplier catalog route exists for API10 demo
+    demo_up = session.exec(select(Upstream).where(Upstream.slug == "vulnshop")).first()
+    if demo_up:
+        supplier = session.exec(
+            select(Route).where(
+                Route.upstream_id == demo_up.id,
+                Route.path_pattern == "/supplier/catalog",
+                Route.method == "GET",
+            )
+        ).first()
+        if not supplier:
+            session.add(
+                Route(
+                    upstream_id=demo_up.id,
+                    method="GET",
+                    path_pattern="/supplier/catalog",
+                    description="Third-party supplier catalog (protected by API10 unsafe URL stripping)",
+                    auth_required=True,
+                    registered=True,
+                    rate_limit_rpm=30,
+                    burst_capacity=10,
+                )
+            )
+            changed = True
+
     if changed:
         session.commit()
+        runtime_cache.invalidate()
 
 
 SEEDED_USERS = [
@@ -228,6 +323,9 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
             burst_capacity=10,
             is_sensitive_flow=False,
             bola_check_enabled=True,
+            bola_owner_param="id",
+            bola_owner_claim="sub",
+            bola_mode="equals_sub",
             registered=True,
             hit_count=85,
             last_seen_at=now - timedelta(minutes=1),
@@ -273,6 +371,9 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
             burst_capacity=12,
             is_sensitive_flow=False,
             bola_check_enabled=True,
+            bola_owner_param="id",
+            bola_owner_claim="sub",
+            bola_mode="learned_owner",
             registered=True,
             hit_count=44,
             last_seen_at=now - timedelta(minutes=11),
@@ -336,6 +437,21 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
             registered=True,
             hit_count=145,
             last_seen_at=now - timedelta(minutes=1),
+        ),
+        Route(
+            upstream_id=upstream.id,
+            method="GET",
+            path_pattern="/supplier/catalog",
+            description="Third-party supplier catalog (protected by API10 unsafe URL stripping)",
+            auth_required=True,
+            required_role=None,
+            rate_limit_rpm=30,
+            burst_capacity=10,
+            is_sensitive_flow=False,
+            bola_check_enabled=False,
+            registered=True,
+            hit_count=12,
+            last_seen_at=now - timedelta(minutes=4),
         ),
         # Shadow APIs (registered=False -> OWASP API9)
         Route(
@@ -483,6 +599,21 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
             owasp_id="API9",
             mode="enforce",
             config_json=json.dumps({"auto_discover": True, "block_unregistered": True}),
+            enabled=True,
+        ),
+        Policy(
+            name="Unsafe Third-Party / Upstream Payload Egress Guard",
+            description="Inspects upstream JSON for private/metadata webhook URLs, strips or blocks them, and pin-checks gateway egress redirects (OWASP API10).",
+            type="egress",
+            scope="global",
+            owasp_id="API10",
+            mode="enforce",
+            config_json=json.dumps({
+                "strip_unsafe_urls": True,
+                "block_private_cidrs": True,
+                "block_metadata_ip": True,
+                "max_response_bytes": 1048576,
+            }),
             enabled=True,
         ),
     ]
