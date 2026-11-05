@@ -21,6 +21,7 @@ import {
   Bar,
 } from 'recharts';
 import { apiFetch } from '../lib/api';
+import { formatProjectLabel, isDemoProject } from '../lib/projects';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
 import { LoadError } from '../components/shared/LoadError';
@@ -154,15 +155,24 @@ export const OverviewPage: React.FC = () => {
         <div>
           <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-              {selectedProjectName || 'Gateway'} Overview
+              {formatProjectLabel(selectedProjectName || 'Gateway', selectedProjectSlug)} Overview
             </h1>
+            {isDemoProject(selectedProjectSlug) && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                Demo Project
+              </span>
+            )}
             <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
               Live
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Real-time traffic metrics, enforcement decisions, and active alerts for {selectedProjectName || 'the selected project'}.
+            Real-time traffic metrics, enforcement decisions, and active alerts for{' '}
+            {formatProjectLabel(selectedProjectName || 'the selected project', selectedProjectSlug)}.
+            {isDemoProject(selectedProjectSlug) && (
+              <> VulnShop is the built-in practice target API.</>
+            )}
           </p>
         </div>
         <div className="flex items-center gap-2.5 flex-wrap">

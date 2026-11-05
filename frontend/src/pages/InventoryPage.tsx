@@ -18,6 +18,7 @@ import {
   Check,
 } from 'lucide-react';
 import { apiFetch, formatTimeIST } from '../lib/api';
+import { formatProjectLabel, isDemoProject } from '../lib/projects';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { MethodBadge, OwaspBadge } from '../components/shared/Badges';
 
@@ -437,7 +438,8 @@ export const InventoryPage: React.FC = () => {
             const totalHitsForProj = (data?.registered_routes || [])
               .filter((r: any) => r.upstream_id === u.id)
               .reduce((acc: number, r: any) => acc + (r.hit_count || 0), 0);
-            const isDemo = u.id === 1;
+            const isDemo = isDemoProject(u.slug);
+            const displayName = formatProjectLabel(u.name, u.slug);
 
             return (
               <div
@@ -457,8 +459,8 @@ export const InventoryPage: React.FC = () => {
                           isSelected ? 'text-cyan-400' : 'text-slate-500 group-hover:text-slate-400'
                         }`}
                       />
-                      <span className="text-sm font-bold truncate text-white" title={u.name}>
-                        {u.name}
+                      <span className="text-sm font-bold truncate text-white" title={displayName}>
+                        {displayName}
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
@@ -478,7 +480,7 @@ export const InventoryPage: React.FC = () => {
                   <div className="flex items-center gap-1.5 min-h-[22px] overflow-hidden">
                     {isDemo ? (
                       <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30">
-                        BUILT-IN DEMO
+                        DEMO PROJECT
                       </span>
                     ) : (
                       <span className="shrink-0 px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
@@ -534,9 +536,17 @@ export const InventoryPage: React.FC = () => {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="text-base font-bold text-white truncate max-w-sm" title={currentProject.name}>
-                    {currentProject.name}
+                  <h3
+                    className="text-base font-bold text-white truncate max-w-sm"
+                    title={formatProjectLabel(currentProject.name, currentProject.slug)}
+                  >
+                    {formatProjectLabel(currentProject.name, currentProject.slug)}
                   </h3>
+                  {isDemoProject(currentProject.slug) && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/15 text-amber-300 border border-amber-500/30 shrink-0">
+                      DEMO PROJECT
+                    </span>
+                  )}
                   {currentProject.enabled ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
                       DEFAULT GATEWAY TARGET (/gw/*)
@@ -547,13 +557,21 @@ export const InventoryPage: React.FC = () => {
                     </span>
                   )}
                 </div>
-                <div className="text-xs text-slate-400 mt-1 font-mono flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <span className="text-slate-500">Backend Server:</span>
-                  <span className="text-slate-200 truncate max-w-md" title={currentProject.base_url}>
+                <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  {isDemoProject(currentProject.slug) && (
+                    <>
+                      <span className="text-amber-200/90">
+                        Built-in intentionally vulnerable e-commerce API for gateway demos
+                      </span>
+                      <span className="text-slate-600">·</span>
+                    </>
+                  )}
+                  <span className="font-mono text-slate-500">Backend:</span>
+                  <span className="font-mono text-slate-200 truncate max-w-md" title={currentProject.base_url}>
                     {currentProject.base_url}
                   </span>
                   <span className="text-slate-600">·</span>
-                  <span className="text-cyan-300 font-bold">{projectRoutes.length} routes</span>
+                  <span className="font-mono text-cyan-300 font-bold">{projectRoutes.length} routes</span>
                 </div>
               </div>
             </div>
@@ -580,7 +598,7 @@ export const InventoryPage: React.FC = () => {
                 <ExternalLink className="w-3.5 h-3.5" />
                 <span>Swagger Docs</span>
               </a>
-              {currentProject.id !== 1 && (
+              {!isDemoProject(currentProject.slug) && (
                 <button
                   onClick={() => handleDeleteUpstream(currentProject.id)}
                   className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-medium shrink-0 transition"

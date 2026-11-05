@@ -423,6 +423,11 @@ export const LoginPage: React.FC = () => {
               <span className="font-mono text-slate-200">sentinel123</span>. Org admins only manage
               users in their own organization.
             </p>
+            <p className="text-xs text-amber-200/90 mt-2 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 inline-block">
+              Practice target API:{' '}
+              <span className="font-semibold text-amber-100">VulnShop (Demo Project)</span> — an
+              intentionally vulnerable e-commerce API at <span className="font-mono">/demo</span>.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">

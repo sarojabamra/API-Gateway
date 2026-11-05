@@ -13,6 +13,7 @@ import {
   Eraser,
 } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { formatProjectLabel, isDemoProject } from '../lib/projects';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
 
@@ -52,6 +53,7 @@ export const AttackSimulatorPage: React.FC = () => {
     canMutate,
     selectedProjectId,
     selectedProjectName,
+    selectedProjectSlug,
   } = useGatewayStore();
   const [scenarios, setScenarios] = useState<any[]>([]);
   const [owaspData, setOwaspData] = useState<any | null>(null);
@@ -277,11 +279,19 @@ export const AttackSimulatorPage: React.FC = () => {
               )}
             </div>
             <h1 className="text-xl sm:text-2xl font-bold text-white">
-              Attack Simulator — {selectedProjectName || 'Selected Project'}
+              Attack Simulator —{' '}
+              {formatProjectLabel(selectedProjectName || 'Selected Project', selectedProjectSlug)}
             </h1>
             <p className="text-xs text-slate-300 leading-relaxed">
-              Execute OWASP API Top 10 test payloads through the gateway pipeline against {selectedProjectName || 'the selected project'} routes.
+              Execute OWASP API Top 10 test payloads through the gateway pipeline against{' '}
+              {formatProjectLabel(selectedProjectName || 'the selected project', selectedProjectSlug)}{' '}
+              routes.
             </p>
+            {isDemoProject(selectedProjectSlug) && (
+              <p className="mt-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-lg text-[11px] font-mono bg-amber-500/15 text-amber-200 border border-amber-500/30">
+                VulnShop is the built-in demo project — intentionally vulnerable so you can compare Gateway ON vs OFF.
+              </p>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-3">

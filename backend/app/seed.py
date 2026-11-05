@@ -24,6 +24,8 @@ from app.models import (
 
 DEMO_ORG_SLUG = "sentinel-demo"
 DEMO_ORG_NAME = "Sentinel Demo"
+DEMO_UPSTREAM_SLUG = "vulnshop"
+DEMO_UPSTREAM_NAME = "VulnShop (Demo Project)"
 
 
 def backfill_route_security_defaults(session: Session) -> None:
@@ -124,9 +126,13 @@ def backfill_route_security_defaults(session: Session) -> None:
         )
         changed = True
 
-    # Ensure supplier catalog route exists for API10 demo
-    demo_up = session.exec(select(Upstream).where(Upstream.slug == "vulnshop")).first()
+    # Keep VulnShop clearly labeled as the built-in demo project + ensure API10 route
+    demo_up = session.exec(select(Upstream).where(Upstream.slug == DEMO_UPSTREAM_SLUG)).first()
     if demo_up:
+        if demo_up.name != DEMO_UPSTREAM_NAME:
+            demo_up.name = DEMO_UPSTREAM_NAME
+            session.add(demo_up)
+            changed = True
         supplier = session.exec(
             select(Route).where(
                 Route.upstream_id == demo_up.id,
@@ -253,10 +259,10 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
     # 1. Seed demo organization + RBAC users. Registered accounts are preserved.
     ensure_seeded_users(session, reset_credentials=force_reset)
 
-    # 2. Seed Protected Upstream (VulnShop Demo API)
+    # 2. Seed Protected Upstream (VulnShop — built-in intentionally vulnerable demo API)
     upstream = Upstream(
-        name="VulnShop E-Commerce Core API",
-        slug="vulnshop",
+        name=DEMO_UPSTREAM_NAME,
+        slug=DEMO_UPSTREAM_SLUG,
         base_url="http://127.0.0.1:8000/demo",
         auth_mode="both",
         enabled=True,

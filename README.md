@@ -17,8 +17,8 @@
    - **Stage 8 — Async Upstream Forwarding**: Proxies via a pooled HTTPX client with per-upstream circuit breaker and private-IP redirect pinning.
    - **Stage 9 — Response Hardening, PII Redaction & Unsafe Consumption (**`API3`**,** `API8`**,** `API10`**)**: Strips sensitive fields and pattern-matched SSN/PAN values, sanitizes all 5xx bodies, and strips/blocks third-party webhook URLs targeting private/metadata hosts.
    - **Stage 10 — Real-Time Threat Detection & WebSocket Broadcast**: Evaluates behavioral/signature rules + rolling Z-score baselines, deduplicates alerts, optional critical-alert webhooks, and streams events over `/ws/live`.
-2. **Intentionally Vulnerable Target API (**`VulnShop` **at** `/demo/`***)**
-   - Built-in e-commerce API covering **all 10** OWASP API Top 10 categories (including `/supplier/catalog` for API10). Use the **Gateway ON/OFF Switch** in the Attack Simulator to compare unprotected exploit output against gateway-protected responses side by side.
+2. **Demo Project — VulnShop (`/demo/*`)**
+   - **VulnShop** is the built-in demo project: an intentionally vulnerable e-commerce API covering **all 10** OWASP API Top 10 categories (including `/supplier/catalog` for API10). Use the **Gateway ON/OFF Switch** in the Attack Simulator to compare unprotected exploit output against gateway-protected responses side by side.
 
 ---
 

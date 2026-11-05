@@ -22,6 +22,7 @@ import {
   X,
 } from 'lucide-react';
 import { apiFetch } from '../../lib/api';
+import { formatProjectLabel } from '../../lib/projects';
 import { useGatewayStore } from '../../store/useGatewayStore';
 import { RequestDetailDrawer } from '../shared/RequestDetailDrawer';
 
@@ -343,7 +344,7 @@ export const MainLayout: React.FC = () => {
                   >
                     {projects.map((project: any) => (
                       <option key={project.id} value={project.id}>
-                        {project.name}
+                        {formatProjectLabel(project.name, project.slug)}
                       </option>
                     ))}
                   </select>

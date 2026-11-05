@@ -311,15 +311,18 @@ def delete_upstream(
     session: Session = Depends(get_session),
     _user: User = Depends(require_roles(["admin", "developer"])),
 ):
-    if upstream_id == 1:
-        raise HTTPException(status_code=400, detail="Cannot delete the built-in VulnShop demo API")
     target = session.get(Upstream, upstream_id)
     if not target:
         raise HTTPException(status_code=404, detail="Upstream API not found")
+    if target.slug == "vulnshop":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete VulnShop — it is the built-in demo project",
+        )
     was_enabled = target.enabled
     session.delete(target)
     if was_enabled:
-        default_up = session.get(Upstream, 1)
+        default_up = session.exec(select(Upstream).where(Upstream.slug == "vulnshop")).first()
         if default_up:
             default_up.enabled = True
             session.add(default_up)
