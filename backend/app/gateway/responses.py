@@ -93,12 +93,32 @@ def harden_response(
     redacted_list: List[str] = []
     out_body = body_text
 
-    # Sanitize all 5xx including 502 (OWASP API8) — never leak exception text
+    # Sanitize all 5xx including 502 (OWASP API8) — never leak exception text /
+    # upstream stack traces. Preserve gateway-authored JSON that already uses the
+    # safe {error, message|detail} shape (e.g. upstream connection hints).
     if enable_header_hardening and status_code >= 500:
-        out_body = json.dumps({
-            "error": "Upstream Service Error" if status_code != 502 else "Bad Gateway",
-            "message": "An internal error occurred. Stack traces and internal details have been sanitized by SentinelGW (OWASP API8).",
-        })
+        preserve_gateway_error = False
+        if body_text and body_text.strip().startswith("{"):
+            try:
+                parsed_err = json.loads(body_text)
+                if (
+                    isinstance(parsed_err, dict)
+                    and isinstance(parsed_err.get("error"), str)
+                    and (
+                        isinstance(parsed_err.get("message"), str)
+                        or isinstance(parsed_err.get("detail"), str)
+                    )
+                    and "Traceback" not in body_text
+                ):
+                    preserve_gateway_error = True
+                    out_body = body_text
+            except Exception:
+                preserve_gateway_error = False
+        if not preserve_gateway_error:
+            out_body = json.dumps({
+                "error": "Upstream Service Error" if status_code != 502 else "Bad Gateway",
+                "message": "An internal error occurred. Stack traces and internal details have been sanitized by SentinelGW (OWASP API8).",
+            })
         return out_headers, out_body, redacted_list
 
     if max_response_bytes and body_text and len(body_text.encode("utf-8")) > max_response_bytes:

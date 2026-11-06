@@ -125,7 +125,7 @@ class RateLimitBurstTestRequest(BaseModel):
 
 
 class SimulatorRunRequest(BaseModel):
-    scenario_id: str  # bola_enum, brute_force, jwt_tamper, data_exposure, rate_flood, bfla_admin, ssrf_metadata, sqli_shadow, all
+    scenario_id: str  # bola_cross_user, bola_enum, brute_force, jwt_tamper, data_exposure, rate_flood, bfla_admin, ssrf_metadata, sqli_shadow, all
     upstream_id: int = 1
     auth_token: Optional[str] = None
     # Manual route targeting (optional). route_id maps to the scenario's primary role;

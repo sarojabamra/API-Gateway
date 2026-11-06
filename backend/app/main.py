@@ -52,7 +52,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
-    description="Reverse-proxy API Security Gateway, OWASP API Top 10 (2023) Policy Engine, and Real-Time Threat Monitoring Control Plane.",
+    description="Reverse-proxy API Security Gateway, OWASP API Top 10 (2025) Policy Engine, and Real-Time Threat Monitoring Control Plane.",
     lifespan=lifespan,
 )
 

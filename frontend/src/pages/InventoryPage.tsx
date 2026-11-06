@@ -44,6 +44,7 @@ export const InventoryPage: React.FC = () => {
     addToast,
     canMutate,
     trafficTick,
+    user,
     selectedProjectId,
     setSelectedProject,
   } = useGatewayStore();
@@ -80,7 +81,7 @@ export const InventoryPage: React.FC = () => {
         res.upstreams?.length &&
         !res.upstreams.some((u: any) => u.id === selectedProjectId)
       ) {
-        const active = res.upstreams.find((u: any) => u.enabled) || res.upstreams[0];
+        const active = res.upstreams[0];
         setSelectedProject(active.id, active.name, active.slug);
       }
     } catch {
@@ -102,9 +103,7 @@ export const InventoryPage: React.FC = () => {
 
   const upstreams = data?.upstreams || [];
   const currentProject =
-    upstreams.find((u: any) => u.id === selectedProjectId) ||
-    upstreams.find((u: any) => u.enabled) ||
-    upstreams[0];
+    upstreams.find((u: any) => u.id === selectedProjectId) || upstreams[0];
   const currentProjectId = currentProject?.id || 1;
 
   // Filter routes and shadow routes ONLY for the currently selected project tab
@@ -120,43 +119,41 @@ export const InventoryPage: React.FC = () => {
     setCallingRouteId(route.id);
     try {
       const concretePath = route.path_pattern.replace(/\{[^}]+\}/g, '101');
-      // If this route belongs to a project that isn't currently the default active target, route via its slug (/gw/{slug}/...)
-      const targetProj = upstreams.find((u: any) => u.id === route.upstream_id);
-      const gwUrl =
-        targetProj && !targetProj.enabled
-          ? `/gw/${targetProj.slug}${concretePath}`
-          : `/gw${concretePath}`;
+      const targetProj = upstreams.find((u: any) => u.id === route.upstream_id) || currentProject;
+      const slug = targetProj?.slug;
+      if (!slug) {
+        throw new Error('This project has no gateway path yet');
+      }
+      const gwUrl = `/gw/${slug}${concretePath.startsWith('/') ? concretePath : `/${concretePath}`}`;
 
       const res = await fetch(gwUrl, {
         method: route.method,
         headers: { 'Content-Type': 'application/json' },
       });
+      let detail = '';
+      if (!res.ok) {
+        const raw = await res.text();
+        try {
+          const parsed = JSON.parse(raw);
+          detail = parsed.message || parsed.detail || parsed.error || raw;
+        } catch {
+          detail = raw;
+        }
+      }
       await fetchInventory();
       addToast({
-        title: `Request Recorded (+1) -> HTTP ${res.status}`,
-        message: `Called ${route.method} ${gwUrl}. Request count is now ${(route.hit_count || 0) + 1}.`,
-        severity: 'info',
+        title: res.ok
+          ? `Request Recorded (+1) -> HTTP ${res.status}`
+          : `Test call returned HTTP ${res.status}`,
+        message: detail
+          ? `${route.method} ${gwUrl}. ${detail}`
+          : `Called ${route.method} ${gwUrl}. Request count is now ${(route.hit_count || 0) + 1}.`,
+        severity: res.ok ? 'info' : 'high',
       });
     } catch (err: any) {
       addToast({ title: 'Test Call Failed', message: err.message, severity: 'high' });
     } finally {
       setCallingRouteId(null);
-    }
-  };
-
-  const handleActivateUpstream = async (upstreamId: number, name: string) => {
-    try {
-      await apiFetch(`/inventory/upstreams/${upstreamId}/activate`, { method: 'POST' });
-      const project = upstreams.find((u: any) => u.id === upstreamId);
-      setSelectedProject(upstreamId, name, project?.slug || '');
-      addToast({
-        title: 'Active Backend Switched',
-        message: `All /gw/* requests now forward to ${name}`,
-        severity: 'info',
-      });
-      await fetchInventory();
-    } catch (err: any) {
-      addToast({ title: 'Could Not Switch API', message: err.message, severity: 'high' });
     }
   };
 
@@ -217,7 +214,6 @@ export const InventoryPage: React.FC = () => {
           base_url: swaggerUrlInput.trim(),
           name: projectNameInput.trim() || undefined,
           slug: projectSlugInput.trim() || undefined,
-          make_default: true,
         }),
       });
       const connectedUrl = res.upstream?.base_url || res.base_url || swaggerUrlInput.trim();
@@ -423,11 +419,22 @@ export const InventoryPage: React.FC = () => {
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-400">
             <FolderKanban className="w-4 h-4 text-cyan-400" />
             <span>Projects ({upstreams.length})</span>
+            {user?.organization_name && (
+              <span className="normal-case tracking-normal font-medium text-slate-500">
+                · {user.organization_name}
+              </span>
+            )}
           </div>
           <span className="text-[11px] text-slate-500 hidden sm:inline">
-            Click any project card to inspect and manage its routes
+            Visible only to members of your organization
           </span>
         </div>
+
+        {data && upstreams.length === 0 && (
+          <p className="text-sm text-slate-400">
+            No projects in {user?.organization_name || 'your organization'} yet. Connect a backend to add one.
+          </p>
+        )}
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pb-1 items-stretch">
           {upstreams.map((u: any) => {
@@ -487,11 +494,6 @@ export const InventoryPage: React.FC = () => {
                         YOUR PROJECT
                       </span>
                     )}
-                    {u.enabled && (
-                      <span className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                        ACTIVE /gw/*
-                      </span>
-                    )}
                     <span className="truncate px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-cyan-300 border border-slate-700/60" title={`Route Slug: /gw/${u.slug}/*`}>
                       /gw/{u.slug}/*
                     </span>
@@ -547,15 +549,9 @@ export const InventoryPage: React.FC = () => {
                       DEMO PROJECT
                     </span>
                   )}
-                  {currentProject.enabled ? (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
-                      DEFAULT GATEWAY TARGET (/gw/*)
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 shrink-0">
-                      SLUG ROUTE (/gw/{currentProject.slug}/*)
-                    </span>
-                  )}
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 shrink-0">
+                    /gw/{currentProject.slug}/*
+                  </span>
                 </div>
                 <div className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
                   {isDemoProject(currentProject.slug) && (
@@ -577,20 +573,8 @@ export const InventoryPage: React.FC = () => {
             </div>
 
             <div className="flex items-center flex-wrap gap-2 shrink-0">
-              {!currentProject.enabled && (
-                <button
-                  onClick={() => handleActivateUpstream(currentProject.id, currentProject.name)}
-                  className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition shrink-0"
-                >
-                  Set as Default Active Target (/gw/*)
-                </button>
-              )}
               <a
-                href={
-                  currentProject.enabled
-                    ? '/gw/docs'
-                    : `/gw/${currentProject.slug}/docs`
-                }
+                href={`/gw/${currentProject.slug}/docs`}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs transition shrink-0"
@@ -849,14 +833,12 @@ export const InventoryPage: React.FC = () => {
                     <td colSpan={6} className="py-12 text-center text-slate-400">
                       No routes registered yet for <strong className="text-white">{currentProject?.name}</strong>.
                       Add one above, paste an OpenAPI spec, or simply call{' '}
-                      <span className="font-mono text-cyan-300">http://localhost:8000/gw/...</span> and SentinelGW will auto-discover it!
+                      <span className="font-mono text-cyan-300">/gw/{currentProject?.slug}/...</span> and SentinelGW will auto-discover it!
                     </td>
                   </tr>
                 ) : (
                   projectRoutes.map((r: any) => {
-                    const gwPrefix = currentProject?.enabled
-                      ? '/gw'
-                      : `/gw/${currentProject?.slug}`;
+                    const gwPrefix = `/gw/${currentProject?.slug}`;
                     return (
                       <tr key={r.id} className="hover:bg-slate-800/40">
                         <td className="py-3 px-4">

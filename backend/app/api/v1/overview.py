@@ -4,7 +4,9 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import Alert, BlocklistEntry, RequestLog, Upstream, to_ist, to_ist_iso
+from app.models import Alert, BlocklistEntry, RequestLog, Upstream, User, to_ist, to_ist_iso
+from app.api.v1.deps import get_current_user
+from app.api.v1.org_access import require_visible_project
 from app.gateway.pipeline import gateway_state
 from app.detection.engine import get_alert_upstream_id
 
@@ -26,7 +28,9 @@ def get_overview_dashboard(
     time_range: str = Query("24h", description="15m, 1h, 24h, 7d"),
     upstream_id: int = Query(1),
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
+    require_visible_project(session, user, upstream_id)
     now = datetime.now(timezone.utc)
     delta = _parse_window(time_range)
     cutoff = now - delta

@@ -11,7 +11,8 @@ import yaml
 from app.db import get_session
 from app.models import Policy, Route, Upstream, User, to_ist_iso
 from app.schemas import OpenAPIImportRequest, RouteCreateRequest
-from app.api.v1.deps import require_roles
+from app.api.v1.deps import get_current_user, require_roles
+from app.api.v1.org_access import list_visible_projects, require_visible_project, require_visible_route
 from app.gateway.policy_engine import infer_route_security
 
 router = APIRouter(prefix="/inventory", tags=["Protected APIs, Route Registry & Shadow APIs"])
@@ -138,9 +139,17 @@ def _upsert_openapi_routes(
 
 
 @router.get("")
-def get_inventory(session: Session = Depends(get_session)):
-    upstreams = session.exec(select(Upstream)).all()
-    all_routes = session.exec(select(Route).order_by(Route.id)).all()
+def get_inventory(
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    upstreams = list_visible_projects(session, user)
+    visible_ids = {u.id for u in upstreams}
+    all_routes = [
+        route
+        for route in session.exec(select(Route).order_by(Route.id)).all()
+        if route.upstream_id in visible_ids
+    ]
 
     registered_routes = [r for r in all_routes if r.registered]
     shadow_routes = [r for r in all_routes if not r.registered]
@@ -151,6 +160,7 @@ def get_inventory(session: Session = Depends(get_session)):
                 "id": u.id,
                 "name": u.name,
                 "slug": u.slug,
+                "organization_id": u.organization_id,
                 "base_url": u.base_url,
                 "auth_mode": u.auth_mode,
                 "enabled": u.enabled,
@@ -217,11 +227,9 @@ def update_upstream(
     upstream_id: int,
     payload: UpstreamUpdateInput,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
-    target = session.get(Upstream, upstream_id)
-    if not target:
-        raise HTTPException(status_code=404, detail="Upstream API not found")
+    target = require_visible_project(session, user, upstream_id)
 
     if payload.slug is not None:
         clean_slug = payload.slug.strip().lower().replace(" ", "-")
@@ -248,6 +256,10 @@ def update_upstream(
         if not clean_url.startswith(("http://", "https://")):
             clean_url = f"http://{clean_url}"
         target.base_url = clean_url
+        # Previous connection failures may have opened the breaker; clear it for this project.
+        from app.gateway.circuit_breaker import circuit_breaker
+
+        circuit_breaker.reset(f"up-{upstream_id}")
 
     if payload.auth_mode is not None:
         target.auth_mode = payload.auth_mode
@@ -262,13 +274,21 @@ def update_upstream(
 def create_upstream(
     payload: UpstreamCreateInput,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
-    clean_slug = payload.slug.strip().lower().replace(" ", "-")
-    existing = session.exec(select(Upstream).where(Upstream.slug == clean_slug)).first()
+    if not user.organization_id:
+        raise HTTPException(status_code=400, detail="Your account is not assigned to an organization")
+    clean_slug = _normalize_slug(payload.slug)
+    clean_url = payload.base_url.strip().rstrip("/")
+    existing = session.exec(
+        select(Upstream).where(
+            Upstream.slug == clean_slug,
+            Upstream.organization_id == user.organization_id,
+        )
+    ).first()
     if existing:
         existing.name = payload.name
-        existing.base_url = payload.base_url.rstrip("/")
+        existing.base_url = clean_url
         existing.auth_mode = payload.auth_mode
         session.add(existing)
         session.commit()
@@ -277,8 +297,9 @@ def create_upstream(
 
     up = Upstream(
         name=payload.name,
-        slug=clean_slug,
-        base_url=payload.base_url.rstrip("/"),
+        slug=_allocate_project_slug(session, clean_slug),
+        organization_id=user.organization_id,
+        base_url=clean_url,
         auth_mode=payload.auth_mode,
         enabled=False,
     )
@@ -288,44 +309,19 @@ def create_upstream(
     return up
 
 
-@router.post("/upstreams/{upstream_id}/activate")
-def activate_default_upstream(
-    upstream_id: int,
-    session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
-):
-    """Sets the chosen API project as the default active upstream for /gw/* requests."""
-    target = session.get(Upstream, upstream_id)
-    if not target:
-        raise HTTPException(status_code=404, detail="Upstream API not found")
-    for u in session.exec(select(Upstream)).all():
-        u.enabled = (u.id == upstream_id)
-        session.add(u)
-    session.commit()
-    return {"status": "activated", "id": target.id, "name": target.name, "base_url": target.base_url}
-
-
 @router.delete("/upstreams/{upstream_id}")
 def delete_upstream(
     upstream_id: int,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
-    target = session.get(Upstream, upstream_id)
-    if not target:
-        raise HTTPException(status_code=404, detail="Upstream API not found")
+    target = require_visible_project(session, user, upstream_id)
     if target.slug == "vulnshop":
         raise HTTPException(
             status_code=400,
             detail="Cannot delete VulnShop — it is the built-in demo project",
         )
-    was_enabled = target.enabled
     session.delete(target)
-    if was_enabled:
-        default_up = session.exec(select(Upstream).where(Upstream.slug == "vulnshop")).first()
-        if default_up:
-            default_up.enabled = True
-            session.add(default_up)
     session.commit()
     return {"status": "deleted", "id": upstream_id}
 
@@ -334,8 +330,9 @@ def delete_upstream(
 def create_route(
     payload: RouteCreateRequest,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
+    require_visible_project(session, user, payload.upstream_id)
     route = Route(
         upstream_id=payload.upstream_id,
         method=payload.method.upper(),
@@ -366,12 +363,12 @@ def create_route(
 def promote_shadow_route(
     route_id: int,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
     """One-click promotion of a discovered Shadow API (OWASP API9) into the official route inventory."""
-    route = session.get(Route, route_id)
-    if not route:
-        raise HTTPException(status_code=404, detail="Shadow route not found")
+    route = require_visible_route(
+        session, user, session.get(Route, route_id), missing_detail="Shadow route not found"
+    )
     route.registered = True
     route.auth_required = True
     route.required_role = "admin" if "internal" in route.path_pattern or "admin" in route.path_pattern else "user"
@@ -385,12 +382,12 @@ def promote_shadow_route(
 def block_shadow_route_permanently(
     route_id: int,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "analyst", "developer"])),
+    user: User = Depends(require_roles(["admin", "analyst", "developer"])),
 ):
     """Ensures the Shadow API policy is in strict 'enforce' mode and marks the shadow route for hard rejection."""
-    route = session.get(Route, route_id)
-    if not route:
-        raise HTTPException(status_code=404, detail="Shadow route not found")
+    route = require_visible_route(
+        session, user, session.get(Route, route_id), missing_detail="Shadow route not found"
+    )
     pol = session.exec(select(Policy).where(Policy.owasp_id == "API9")).first()
     if pol:
         pol.enabled = True
@@ -406,12 +403,13 @@ def block_shadow_route_permanently(
 def import_openapi_spec(
     payload: OpenAPIImportRequest,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
     """
     Parses an OpenAPI 3.0 JSON or YAML specification and auto-registers routes
     with authentication, role requirements, and schema metadata.
     """
+    require_visible_project(session, user, payload.upstream_id)
     raw = (payload.spec_content or "").strip()
     if not raw:
         raise HTTPException(status_code=400, detail="Please paste your OpenAPI JSON or YAML content")
@@ -432,6 +430,24 @@ class SwaggerSyncInput(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
     make_default: bool = True
+
+
+def _normalize_slug(value: str) -> str:
+    clean = (value or "").strip().lower().replace(" ", "-").strip("-")
+    return clean or "project"
+
+
+def _allocate_project_slug(session: Session, preferred: str, keep_id: Optional[int] = None) -> str:
+    """Pick a gateway slug. The same name and backend URL may exist in another organization, but /gw/{slug} stays unique."""
+    base = _normalize_slug(preferred)[:48].rstrip("-") or "project"
+    candidate = base
+    suffix = 2
+    while True:
+        taken = session.exec(select(Upstream).where(Upstream.slug == candidate)).first()
+        if taken is None or taken.id == keep_id:
+            return candidate
+        candidate = f"{base}-{suffix}"
+        suffix += 1
 
 
 def _derive_slug_and_name(url: str, custom_name: Optional[str], custom_slug: Optional[str]):
@@ -487,13 +503,16 @@ async def _discover_api_backend_from_frontend(frontend_url: str, client: httpx.A
 async def sync_swagger_from_url(
     payload: SwaggerSyncInput,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
     """
     Connects any local or deployed backend URL (on any port or domain),
-    fetches its OpenAPI/Swagger spec if available, registers its endpoints,
-    and activates it so /gw/* and /gw/docs proxy through SentinelGW.
+    fetches its OpenAPI/Swagger spec if available, and registers its endpoints
+    under /gw/{slug}/.
     """
+    if not user.organization_id:
+        raise HTTPException(status_code=400, detail="Your account is not assigned to an organization")
+
     raw_url = payload.base_url.strip()
     if not raw_url:
         raise HTTPException(status_code=400, detail="Please enter a backend URL (e.g. http://127.0.0.1:8001)")
@@ -518,29 +537,28 @@ async def sync_swagger_from_url(
     derived_name, clean_slug = _derive_slug_and_name(clean_url, payload.name, payload.slug)
 
     up = session.exec(
-        select(Upstream).where((Upstream.base_url == clean_url) | (Upstream.slug == clean_slug))
+        select(Upstream).where(
+            Upstream.organization_id == user.organization_id,
+            (Upstream.base_url == clean_url) | (Upstream.slug == clean_slug),
+        )
     ).first()
     if not up:
         up = Upstream(
             name=derived_name,
-            slug=clean_slug,
+            slug=_allocate_project_slug(session, clean_slug),
+            organization_id=user.organization_id,
             base_url=clean_url,
             auth_mode="none",
-            enabled=payload.make_default,
+            enabled=True,
         )
     else:
         up.name = derived_name
-        up.slug = clean_slug
         up.base_url = clean_url
+        if payload.slug:
+            up.slug = _allocate_project_slug(session, clean_slug, keep_id=up.id)
     session.add(up)
     session.commit()
     session.refresh(up)
-
-    if payload.make_default:
-        for other in session.exec(select(Upstream)).all():
-            other.enabled = (other.id == up.id)
-            session.add(other)
-        session.commit()
 
     imported_routes: List[Dict[str, Any]] = []
     openapi_reachable = False
@@ -575,6 +593,6 @@ async def sync_swagger_from_url(
         "openapi_reachable": openapi_reachable,
         "imported_count": len(imported_routes),
         "openapi_error": openapi_error,
-        "gateway_swagger_url": "/gw/docs" if up.enabled else f"/gw/{up.slug}/docs",
+        "gateway_swagger_url": f"/gw/{up.slug}/docs",
     }
 

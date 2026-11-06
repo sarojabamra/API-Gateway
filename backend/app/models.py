@@ -48,6 +48,7 @@ class Upstream(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
     slug: str = Field(index=True, unique=True)
+    organization_id: Optional[int] = Field(default=None, index=True, foreign_key="organizations.id")
     base_url: str
     auth_mode: str = Field(default="jwt")  # jwt, api_key, both, none
     openapi_spec_json: Optional[str] = Field(default=None)

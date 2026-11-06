@@ -134,45 +134,45 @@ def _best(
     return best_route, best_score, best_reason
 
 
-def _score_bola(route: Route) -> Tuple[int, str]:
+def _score_bola_cross_user(route: Route) -> Tuple[int, str]:
+    """User 2 calling a route whose path contains a different user id."""
     if not route.bola_check_enabled or "{" not in (route.path_pattern or ""):
         return -1, "BOLA not enabled"
     if _is_admin_route(route):
         return -1, "admin route (BFLA, not BOLA)"
     if route.auth_required is False:
-        return -1, "public route (no ownership check)"
+        return -1, "public route"
+    params = _path_params(route.path_pattern)
+    if not any(is_user_like_param(name, route.path_pattern) for name in params):
+        return -1, "no user id on this route"
     if route.method.upper() not in ("GET", "PUT", "PATCH", "DELETE", "POST"):
         return -1, "unsupported method"
-
-    params = _path_params(route.path_pattern)
-    mode = resolve_bola_mode(route)
-    text = _text(route)
-    score = 10
-    reasons: List[str] = []
-
-    userish = any(is_user_like_param(p, route.path_pattern) for p in params)
-    resourceish = any(is_resource_like_param(p, route.path_pattern) for p in params)
-
-    if mode == BOLA_MODE_EQUALS_SUB and userish:
-        score += 80
-        reasons.append("equals_sub user id")
-    elif mode == BOLA_MODE_EQUALS_SUB:
-        score += 40
-        reasons.append("equals_sub")
-    elif mode == BOLA_MODE_LEARNED_OWNER and resourceish:
-        score += 55
-        reasons.append("learned_owner resource id")
-    elif mode == BOLA_MODE_LEARNED_OWNER:
-        score += 35
-        reasons.append("learned_owner")
-
+    score = 70
     if route.method.upper() == "GET":
-        score += 8
-    if any(k in text for k in ("history", "profile", "board", "booking", "order", "account")):
-        score += 6
-    # Prefer fewer path params (clearer ownership object)
-    score += max(0, 6 - len(params) * 2)
-    return score, ", ".join(reasons) or "parameterized BOLA route"
+        score += 25
+    if resolve_bola_mode(route) == BOLA_MODE_EQUALS_SUB:
+        score += 15
+    return score, "user id on route"
+
+
+def _score_bola_enum(route: Route) -> Tuple[int, str]:
+    """GET resource IDs 1–6. User-id routes belong to the cross-user scenario."""
+    if route.method.upper() != "GET":
+        return -1, "enumeration check uses GET"
+    if not route.bola_check_enabled or "{" not in (route.path_pattern or ""):
+        return -1, "BOLA not enabled"
+    if _is_admin_route(route):
+        return -1, "admin route"
+    if route.auth_required is False:
+        return -1, "public route"
+    params = _path_params(route.path_pattern)
+    if any(is_user_like_param(name, route.path_pattern) for name in params):
+        return -1, "user-id route is the cross-user check"
+    if not any(is_resource_like_param(name, route.path_pattern) for name in params):
+        return -1, "no resource id"
+    if resolve_bola_mode(route) != BOLA_MODE_LEARNED_OWNER:
+        return -1, "enumeration cap runs on learned_owner resource routes"
+    return 80, "resource id for enumeration"
 
 
 def _score_login(route: Route) -> Tuple[int, str]:
@@ -390,7 +390,8 @@ def _score_supplier(route: Route) -> Tuple[int, str]:
 
 # scenario_id -> (role, scorer, min_score, required)
 _SCENARIO_SELECTORS: Dict[str, List[Tuple[str, Any, int, bool]]] = {
-    "bola_enum": [("bola", _score_bola, 10, True)],
+    "bola_cross_user": [("user_route", _score_bola_cross_user, 10, True)],
+    "bola_enum": [("object_route", _score_bola_enum, 10, True)],
     "brute_force": [("login", _score_login, 40, True)],
     "jwt_tamper": [("jwt_victim", _score_jwt_victim, 20, True)],
     "data_exposure": [
@@ -407,7 +408,8 @@ _SCENARIO_SELECTORS: Dict[str, List[Tuple[str, Any, int, bool]]] = {
 }
 
 ROLE_LABELS: Dict[str, str] = {
-    "bola": "BOLA object route",
+    "user_route": "User-id route",
+    "object_route": "Resource object route",
     "login": "Login route",
     "jwt_victim": "JWT-protected route",
     "read": "Profile / data-read route",
@@ -423,7 +425,8 @@ ROLE_LABELS: Dict[str, str] = {
 
 # Convenience: single route_id in the API maps to this role
 PRIMARY_ROLE: Dict[str, str] = {
-    "bola_enum": "bola",
+    "bola_cross_user": "user_route",
+    "bola_enum": "object_route",
     "brute_force": "login",
     "jwt_tamper": "jwt_victim",
     "data_exposure": "read",

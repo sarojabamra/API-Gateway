@@ -8,6 +8,7 @@ from app.detection.rules import behavioral_tracker
 from app.detection.scoring import compute_threat_score
 from app.detection.ai_triage import generate_ai_triage_summary
 from app.gateway.pipeline import gateway_state
+from app.notifications.email_alerts import notify_organization_of_threat
 
 
 def get_alert_upstream_id(alert: Alert) -> int:
@@ -112,6 +113,7 @@ async def process_request_event(session: Session, log_entry: RequestLog) -> List
             session.add(alert_obj)
             session.commit()
             session.refresh(alert_obj)
+            await notify_organization_of_threat(session, alert_obj)
 
         created_or_updated_alerts.append(alert_obj)
 

@@ -74,5 +74,12 @@ class CircuitBreaker:
     def snapshot(self, upstream_key: str) -> Dict[str, float]:
         return dict(self._bucket(upstream_key))
 
+    def reset(self, upstream_key: Optional[str] = None) -> None:
+        """Clear breaker state for one upstream, or all if key is omitted."""
+        if upstream_key is None:
+            self._state.clear()
+            return
+        self._state.pop(upstream_key, None)
+
 
 circuit_breaker = CircuitBreaker()

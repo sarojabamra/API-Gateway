@@ -102,6 +102,83 @@ def test_end_to_end_gateway_and_control_plane():
         )
         assert blocked.status_code == 403
 
+        # Projects are visible only to members of the same organization
+        inventory = client.get("/api/v1/inventory", headers=headers)
+        assert inventory.status_code == 200
+        demo_projects = inventory.json()["upstreams"]
+        assert any(project["slug"] == "vulnshop" for project in demo_projects)
+        vulnshop_id = next(project["id"] for project in demo_projects if project["slug"] == "vulnshop")
+
+        same_org = client.get(
+            "/api/v1/inventory",
+            headers={"Authorization": f"Bearer {register_res.json()['access_token']}"},
+        )
+        assert same_org.status_code == 200
+        assert any(project["id"] == vulnshop_id for project in same_org.json()["upstreams"])
+
+        other_headers = {"Authorization": f"Bearer {create_res.json()['access_token']}"}
+        other_org = client.get("/api/v1/inventory", headers=other_headers)
+        assert other_org.status_code == 200
+        assert other_org.json()["upstreams"] == []
+        assert other_org.json()["registered_routes"] == []
+        assert client.get(f"/api/v1/overview?upstream_id={vulnshop_id}", headers=other_headers).status_code == 404
+        assert client.get(f"/api/v1/alerts?upstream_id={vulnshop_id}", headers=other_headers).status_code == 404
+
+        created_project = client.post(
+            "/api/v1/inventory/upstreams",
+            json={
+                "name": "Acme Billing",
+                "slug": f"acme-{uuid.uuid4().hex[:8]}",
+                "base_url": "http://127.0.0.1:8099",
+            },
+            headers=other_headers,
+        )
+        assert created_project.status_code == 200
+        created_id = created_project.json()["id"]
+        assert created_project.json()["organization_id"] == create_res.json()["user"]["organization_id"]
+        assert any(
+            project["id"] == created_id
+            for project in client.get("/api/v1/inventory", headers=other_headers).json()["upstreams"]
+        )
+        assert all(
+            project["id"] != created_id
+            for project in client.get("/api/v1/inventory", headers=headers).json()["upstreams"]
+        )
+        assert client.get(f"/api/v1/overview?upstream_id={created_id}", headers=headers).status_code == 404
+
+        # Another organization can connect a project with the same name and backend URL
+        shared = next(project for project in demo_projects if project["slug"] == "vulnshop")
+        duplicate = client.post(
+            "/api/v1/inventory/upstreams",
+            json={
+                "name": shared["name"],
+                "slug": shared["slug"],
+                "base_url": shared["base_url"],
+            },
+            headers=other_headers,
+        )
+        assert duplicate.status_code == 200
+        duplicate_body = duplicate.json()
+        assert duplicate_body["id"] != shared["id"]
+        assert duplicate_body["name"] == shared["name"]
+        assert duplicate_body["base_url"] == shared["base_url"]
+        assert duplicate_body["organization_id"] == create_res.json()["user"]["organization_id"]
+        assert duplicate_body["slug"] != shared["slug"]
+        other_projects = client.get("/api/v1/inventory", headers=other_headers).json()["upstreams"]
+        assert any(project["id"] == duplicate_body["id"] for project in other_projects)
+        demo_again = client.get("/api/v1/inventory", headers=headers).json()["upstreams"]
+        assert any(
+            project["id"] == shared["id"] and project["base_url"] == shared["base_url"]
+            for project in demo_again
+        )
+        assert all(project["id"] != duplicate_body["id"] for project in demo_again)
+
+        # Bare /gw has no default project; the project slug is required
+        missing_slug = client.get("/gw/products")
+        assert missing_slug.status_code == 404
+        assert "project-slug" in missing_slug.json()["message"]
+        assert client.get("/gw/vulnshop/openapi.json").status_code == 200
+
         # 3. Verify Overview KPIs and OWASP Top 10 coverage
         ov = client.get("/api/v1/overview?time_range=24h", headers=headers)
         assert ov.status_code == 200
@@ -148,10 +225,25 @@ def test_end_to_end_gateway_and_control_plane():
         assert rejected_run.status_code == 400
         assert "Invalid JWT" in rejected_run.json()["detail"]
 
-        # BOLA blocked when Gateway ON
+        # User 2 opening another user's route is blocked when Gateway ON
+        cross_on = client.post("/api/v1/simulator/run", json={"scenario_id": "bola_cross_user"}, headers=headers)
+        assert cross_on.status_code == 200
+        cross_steps = cross_on.json()["steps"]
+        assert len(cross_steps) == 7
+        assert cross_steps[0]["status_code"] == 200
+        assert sum(1 for step in cross_steps if step["status_code"] == 403) == 6
+
+        # Distinct resource IDs 1–6 hit the enumeration cap when Gateway ON
         bola_on = client.post("/api/v1/simulator/run", json={"scenario_id": "bola_enum"}, headers=headers)
         assert bola_on.status_code == 200
+        enum_steps = bola_on.json()["steps"]
+        assert len(enum_steps) == 6
+        assert enum_steps[0]["status_code"] == 200
         assert bola_on.json()["blocked_count"] >= 1
+        assert any(
+            step["status_code"] == 429 and "enumeration" in (step.get("response_preview") or "").lower()
+            for step in bola_on.json()["steps"]
+        )
 
         # SSRF blocked when Gateway ON
         ssrf_on = client.post("/api/v1/simulator/run", json={"scenario_id": "ssrf_metadata"}, headers=headers)

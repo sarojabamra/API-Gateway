@@ -6,7 +6,8 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models import ClientBaseline, Route, Upstream, User
 from app.schemas import RateLimitBurstTestRequest
-from app.api.v1.deps import require_roles
+from app.api.v1.deps import get_current_user, require_roles
+from app.api.v1.org_access import require_visible_project, require_visible_route
 from app.gateway.ratelimit import rate_limiter
 
 router = APIRouter(prefix="/ratelimits", tags=["Rate Limiting & Velocity Studio"])
@@ -16,13 +17,19 @@ router = APIRouter(prefix="/ratelimits", tags=["Rate Limiting & Velocity Studio"
 def get_rate_limits_overview(
     upstream_id: int = Query(1),
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
+    require_visible_project(session, user, upstream_id)
     routes = session.exec(
         select(Route)
         .where(Route.registered == True, Route.upstream_id == upstream_id)
         .order_by(Route.id)
     ).all()
-    baselines = session.exec(select(ClientBaseline).order_by(ClientBaseline.last_zscore.desc())).all()
+    baselines = [
+        item
+        for item in session.exec(select(ClientBaseline).order_by(ClientBaseline.last_zscore.desc())).all()
+        if (item.client_key or "").startswith(f"{upstream_id}:")
+    ]
 
     return {
         "backend_engine": rate_limiter.backend_type,
@@ -71,9 +78,7 @@ def update_route_rate_limit(
     session: Session = Depends(get_session),
     _user: User = Depends(require_roles(["admin", "analyst", "developer"])),
 ):
-    route = session.get(Route, route_id)
-    if not route:
-        raise HTTPException(status_code=404, detail="Route not found")
+    route = require_visible_route(session, _user, session.get(Route, route_id))
     route.rate_limit_rpm = payload.rate_limit_rpm
     route.burst_capacity = payload.burst_capacity
     route.is_sensitive_flow = payload.is_sensitive_flow
@@ -94,6 +99,7 @@ async def run_rate_limit_burst_test(
     payload: RateLimitBurstTestRequest,
     request: Request,
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     """
     Simulates N rapid requests through /gw/{path} from a test client IP and returns
@@ -104,9 +110,7 @@ async def run_rate_limit_burst_test(
 
     count = min(max(1, payload.request_count), 60)
     clean_path = payload.path.lstrip("/")
-    upstream = session.get(Upstream, payload.upstream_id)
-    if not upstream:
-        raise HTTPException(status_code=404, detail="Selected API project was not found")
+    upstream = require_visible_project(session, user, payload.upstream_id)
     gateway_path = f"/gw/{upstream.slug}/{clean_path}"
     jwt_token = mint_demo_jwt(
         sub=infer_simulator_subject(session, payload.upstream_id, path=clean_path),

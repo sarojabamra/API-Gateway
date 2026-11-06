@@ -669,6 +669,7 @@ Empty package markers: `backend/app/__init__.py`, `api/__init__.py`, `api/v1/__i
 | `backend/Dockerfile` / `frontend/Dockerfile` | Container images. |
 | `backend/requirements.txt` | Python deps (FastAPI, SQLModel, httpx, redis, jwt, bcrypt, …). |
 | `README.md` | Quick start and role overview. |
+| `docs/PRODUCT_OVERVIEW.md` | Why it exists, feature list, and basic how-to. |
 | `docs/PROJECT_PROPOSAL_AND_IMPLEMENTATION_PLAN.md` | Original plan / acceptance criteria. |
 | `docs/ROLE_BASED_USER_GUIDE.md` | How each persona uses the UI. |
 | `docs/CODEBASE_GUIDE.md` | This file. |

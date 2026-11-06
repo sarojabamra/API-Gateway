@@ -25,6 +25,7 @@ from app.api.v1.deps import (
     require_roles,
     verify_password,
 )
+from app.api.v1.org_access import require_visible_project
 from app.gateway.auth import (
     get_upstream_jwt_config,
     hash_api_key,
@@ -193,11 +194,9 @@ class UpstreamJWTConfigInput(BaseModel):
 def get_project_jwt_config(
     upstream_id: int,
     session: Session = Depends(get_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
-    upstream = session.get(Upstream, upstream_id)
-    if not upstream:
-        raise HTTPException(status_code=404, detail="API project not found")
+    upstream = require_visible_project(session, user, upstream_id)
     config = session.exec(
         select(UpstreamJWTConfig).where(UpstreamJWTConfig.upstream_id == upstream_id)
     ).first()
@@ -223,11 +222,9 @@ def update_project_jwt_config(
     upstream_id: int,
     payload: UpstreamJWTConfigInput,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "developer"])),
+    user: User = Depends(require_roles(["admin", "developer"])),
 ):
-    upstream = session.get(Upstream, upstream_id)
-    if not upstream:
-        raise HTTPException(status_code=404, detail="API project not found")
+    upstream = require_visible_project(session, user, upstream_id)
     algorithms = [alg.strip() for alg in payload.allowed_algorithms if alg.strip()]
     if not algorithms or "none" in {alg.lower() for alg in algorithms}:
         raise HTTPException(status_code=400, detail="Choose at least one signed JWT algorithm; alg=none is forbidden")
@@ -259,7 +256,7 @@ def update_project_jwt_config(
     session.add(config)
     session.commit()
     session.refresh(config)
-    return get_project_jwt_config(upstream_id, session, _user)
+    return get_project_jwt_config(upstream_id, session, user)
 
 
 class JwtTestUnifiedInput(BaseModel):
@@ -312,7 +309,10 @@ def test_jwt_token(
         expected_role=payload.expected_role,
         expected_scope=payload.expected_scope,
         jwt_config=(
-            get_upstream_jwt_config(session, payload.upstream_id)
+            get_upstream_jwt_config(
+                session,
+                require_visible_project(session, _user, payload.upstream_id).id,
+            )
             if payload.upstream_id is not None
             else None
         ),

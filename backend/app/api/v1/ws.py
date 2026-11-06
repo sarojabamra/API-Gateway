@@ -3,11 +3,15 @@ import json
 from typing import Any, Dict, List, Optional
 
 import redis
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from redis.exceptions import RedisError
+from sqlmodel import Session
 
+from app.api.v1.deps import authenticate_access_token
 from app.config import settings
+from app.db import engine
 from app.gateway.redis_client import redis_handle
+from app.models import Upstream
 
 router = APIRouter(tags=["Realtime WebSocket Hub"])
 
@@ -16,7 +20,7 @@ CHANNEL = "sgw:ws:events"
 
 class WebSocketConnectionManager:
     def __init__(self) -> None:
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: Dict[WebSocket, Optional[int]] = {}
         self._listen_task: Optional[asyncio.Task] = None
         self._running = False
 
@@ -35,13 +39,25 @@ class WebSocketConnectionManager:
                 pass
             self._listen_task = None
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, organization_id: Optional[int]) -> None:
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[websocket] = organization_id
 
     def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        self.active_connections.pop(websocket, None)
+
+    def _can_view_event(self, organization_id: Optional[int], message: Dict[str, Any]) -> bool:
+        data = message.get("data")
+        upstream_id = data.get("upstream_id") if isinstance(data, dict) else None
+        if organization_id is None or upstream_id is None:
+            return False
+        try:
+            upstream_id = int(upstream_id)
+        except (TypeError, ValueError):
+            return False
+        with Session(engine) as session:
+            project = session.get(Upstream, upstream_id)
+            return bool(project and project.organization_id == organization_id)
 
     async def broadcast(self, message: Dict[str, Any]) -> None:
         client = redis_handle.get()
@@ -58,7 +74,9 @@ class WebSocketConnectionManager:
             return
         payload = json.dumps(message)
         stale: List[WebSocket] = []
-        for connection in list(self.active_connections):
+        for connection, organization_id in list(self.active_connections.items()):
+            if not self._can_view_event(organization_id, message):
+                continue
             try:
                 await connection.send_text(payload)
             except Exception:
@@ -115,8 +133,21 @@ ws_manager = WebSocketConnectionManager()
 
 
 @router.websocket("/ws/live")
-async def websocket_live_endpoint(websocket: WebSocket):
-    await ws_manager.connect(websocket)
+async def websocket_live_endpoint(websocket: WebSocket, token: Optional[str] = None):
+    organization_id: Optional[int] = None
+    if not token:
+        await websocket.accept()
+        await websocket.close(code=1008)
+        return
+    try:
+        with Session(engine) as session:
+            user = authenticate_access_token(token, session)
+            organization_id = user.organization_id
+    except HTTPException:
+        await websocket.accept()
+        await websocket.close(code=1008)
+        return
+    await ws_manager.connect(websocket, organization_id)
     try:
         while True:
             data = await websocket.receive_text()

@@ -12,12 +12,10 @@ from app.gateway.policy_engine import (
     BOLA_MODE_LEARNED_OWNER,
     is_resource_like_param,
     is_user_like_param,
-    list_learned_object_ids,
     reset_bola_enumeration,
     resolve_bola_mode,
 )
 from app.gateway.ratelimit import rate_limiter
-from app.demo_api.vulnshop import VULNSHOP_ORDERS
 from app.attack_sim.targeting import (
     describe_plan,
     plan_scenario_targets,
@@ -26,14 +24,24 @@ from app.attack_sim.targeting import (
 
 SCENARIO_CATALOG: List[Dict[str, Any]] = [
     {
-        "id": "bola_enum",
-        "title": "API1: BOLA Object ID Enumeration",
+        "id": "bola_cross_user",
+        "title": "API1: Cross-User Object Access",
         "owasp_id": "API1",
         "severity": "high",
-        "target_endpoint": "Auto: BOLA-enabled user/resource route for this project",
-        "description": "Picks this project's best BOLA route (equals_sub user ids or learned_owner resource ids) and enumerates object IDs. Skips admin/public routes.",
-        "expected_when_on": "403 Forbidden / 429 (BOLA ownership or ID-enumeration cap blocks unauthorized objects)",
-        "expected_when_off": "200 OK — unauthorized object records returned without ownership checks",
+        "target_endpoint": "Auto: route whose path contains a user id",
+        "description": "Authenticates as user id 2, reads that user's own id, then requests the same route for user ids 1, 3, 4, 5, 6, and 7. No request body is invented.",
+        "expected_when_on": "200 on user 2's own id, then 403 Forbidden for every other user id",
+        "expected_when_off": "Upstream response for the caller's own id and for each other user id",
+    },
+    {
+        "id": "bola_enum",
+        "title": "API1: BOLA ID Enumeration Blocked",
+        "owasp_id": "API1",
+        "severity": "high",
+        "target_endpoint": "Auto: GET resource route (booking, order, …), not a user-id route",
+        "description": "Reads resource id 2 as user 2, then requests resource ids 1, 3, 4, 5, and 6. The ID past the enumeration cap must be blocked. User-id routes are not used here.",
+        "expected_when_on": "200 on the caller's own object id, then 429 once ID enumeration is blocked",
+        "expected_when_off": "Upstream response for the caller's own object and for every other object ID",
     },
     {
         "id": "brute_force",
@@ -209,6 +217,13 @@ async def execute_attack_scenario(
         resolved = resolve_simulator_user_jwt(auth_token, session, upstream_id)
         subject = resolved["subject"]
         user_jwt = resolved["token"]
+        user_two_jwt = mint_demo_jwt(
+            sub="2",
+            email="user2@sentinel.local",
+            role="user",
+            session=session,
+            upstream_id=upstream_id,
+        )["token"]
         alg_none_jwt = mint_demo_jwt(
             sub=subject, preset="alg_none", session=session, upstream_id=upstream_id
         )["token"]
@@ -217,7 +232,6 @@ async def execute_attack_scenario(
         )["token"]
 
     own_id = simulator_object_id(subject)
-    neighbor_ids = [str(int(own_id) + offset) for offset in range(1, 7)] + ["999"]
     overrides = resolve_route_overrides(scenario_id, route_id, route_overrides)
     plan = plan_scenario_targets(scenario_id, routes, overrides=overrides)
 
@@ -268,52 +282,9 @@ async def execute_attack_scenario(
             result = result.replace("{" + param + "}", fill)
         return result
 
-    def resolve_bola_probe_ids(route: Optional[Route]) -> Tuple[List[str], str]:
-        if route is None:
-            return [own_id, *neighbor_ids], "user"
-
-        mode = resolve_bola_mode(route)
-        params = _path_params(route.path_pattern)
-        has_user_param = any(is_user_like_param(p, route.path_pattern) for p in params)
-
-        if mode == BOLA_MODE_EQUALS_SUB or has_user_param:
-            return [own_id, *neighbor_ids], "user"
-
-        learned_own = list_learned_object_ids(upstream_id, route.path_pattern, owner_sub=subject)
-        learned_all = list_learned_object_ids(upstream_id, route.path_pattern)
-        foreign = [oid for oid in learned_all if oid not in learned_own]
-        order_ids = list(VULNSHOP_ORDERS.keys()) if "order" in route.path_pattern.lower() else []
-
-        probe_ids: List[str] = []
-        if learned_own:
-            probe_ids.append(learned_own[0])
-        elif order_ids:
-            owned = [
-                oid for oid, meta in VULNSHOP_ORDERS.items() if meta.get("owner_sub") == subject
-            ]
-            probe_ids.append(owned[0] if owned else order_ids[0])
-        else:
-            probe_ids.append("1001")
-
-        for oid in foreign[:4]:
-            if oid not in probe_ids:
-                probe_ids.append(oid)
-        for oid in order_ids:
-            if oid not in probe_ids:
-                probe_ids.append(oid)
-            if len(probe_ids) >= 6:
-                break
-
-        base = int(re.sub(r"\D", "", probe_ids[0]) or "1001")
-        for offset in range(1, 6):
-            candidate = str(base + offset)
-            if candidate not in probe_ids:
-                probe_ids.append(candidate)
-
-        return probe_ids[:8], "resource"
-
     # Bind selected routes from the project-aware plan
-    bola_route = plan.route("bola")
+    bola_user_route = plan.route("user_route")
+    bola_object_route = plan.route("object_route")
     login_route = plan.route("login")
     jwt_victim_route = plan.route("jwt_victim")
     read_route = plan.route("read")
@@ -325,8 +296,6 @@ async def execute_attack_scenario(
     search_route = plan.route("search")
     supplier_route = plan.route("supplier")
 
-    bola_probe_ids, bola_id_kind = resolve_bola_probe_ids(bola_route)
-    first_bola_id = bola_probe_ids[0] if bola_probe_ids else own_id
     ip_prefix = f"198.18.{(upstream_id % 240) + 1}"
 
     meta = next((s for s in SCENARIO_CATALOG if s["id"] == scenario_id), SCENARIO_CATALOG[0])
@@ -365,35 +334,74 @@ async def execute_attack_scenario(
     steps: List[Dict[str, Any]] = []
 
     async with httpx.AsyncClient(transport=transport, base_url="http://local-gateway") as client:
-        if scenario_id == "bola_enum":
-            attacker_ip = f"{ip_prefix}.101"
-            # Fresh enumeration window so prior runs don't inflate distinct counts
-            reset_bola_enumeration(f"{upstream_id}:{attacker_ip}")
-            bola_method = bola_route.method.upper() if bola_route else "GET"
-            for target_id in bola_probe_ids:
-                if bola_id_kind == "user":
-                    target_path = concrete(bola_route, target_id, f"/users/{target_id}")
-                    label_id = f"user_id={target_id}"
-                else:
-                    target_path = concrete(
-                        bola_route,
-                        own_id,
-                        f"/orders/{target_id}",
-                        resource_id=target_id,
-                    )
-                    param_name = (
-                        (bola_route.bola_owner_param if bola_route else None)
-                        or (_path_params(bola_route.path_pattern)[0] if bola_route else "id")
-                    )
-                    label_id = f"{param_name}={target_id}"
+        if scenario_id == "bola_cross_user":
+            attacker_ip = f"{ip_prefix}.2"
+            bola_method = bola_user_route.method.upper() if bola_user_route else "GET"
+            # Own id first, so the run shows one allowed request, then the other user ids.
+            for target_user_id, kind in (
+                ("2", "own user id"),
+                ("1", "other user id"),
+                ("3", "other user id"),
+                ("4", "other user id"),
+                ("5", "other user id"),
+                ("6", "other user id"),
+                ("7", "other user id"),
+            ):
+                target_path = concrete(bola_user_route, target_user_id, f"/users/{target_user_id}")
                 resp = await client.request(
                     bola_method,
                     gateway_url(target_path),
-                    headers=sim_headers(attacker_ip, user_agent="BOLA-ScraperBot/2.1"),
+                    headers=sim_headers(
+                        attacker_ip,
+                        token=user_two_jwt,
+                        user_agent="SentinelGW-AttackSimulator/1.0",
+                    ),
                 )
                 steps.append(
                     _format_step(
-                        f"{bola_method} {gateway_url(target_path)} [{label_id} | {plan.reason('bola')}]",
+                        f"{bola_method} {gateway_url(target_path)} [caller=user 2, {kind}={target_user_id} | {plan.reason('user_route')}]",
+                        "API1",
+                        resp,
+                    )
+                )
+
+        elif scenario_id == "bola_enum":
+            attacker_ip = f"{ip_prefix}.101"
+            reset_bola_enumeration(f"{upstream_id}:{attacker_ip}")
+            bola_method = bola_object_route.method.upper() if bola_object_route else "GET"
+            object_pattern = bola_object_route.path_pattern if bola_object_route else ""
+            object_params = _path_params(object_pattern)
+            resource_param = next(
+                (name for name in object_params if is_resource_like_param(name, object_pattern)),
+                object_params[0] if object_params else "id",
+            )
+            # Own object first. The cap is 5 distinct IDs, so the sixth ID must be blocked.
+            for object_id, kind in (
+                ("2", "own object id"),
+                ("1", "other object id"),
+                ("3", "other object id"),
+                ("4", "other object id"),
+                ("5", "other object id"),
+                ("6", "other object id"),
+            ):
+                target_path = concrete(
+                    bola_object_route,
+                    "2",
+                    f"/orders/{object_id}",
+                    resource_id=object_id,
+                )
+                resp = await client.request(
+                    bola_method,
+                    gateway_url(target_path),
+                    headers=sim_headers(
+                        attacker_ip,
+                        token=user_two_jwt,
+                        user_agent="SentinelGW-AttackSimulator/1.0",
+                    ),
+                )
+                steps.append(
+                    _format_step(
+                        f"{bola_method} {gateway_url(target_path)} [caller=user 2, {kind}={object_id} | {plan.reason('object_route')}]",
                         "API1",
                         resp,
                     )

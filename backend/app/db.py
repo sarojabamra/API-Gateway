@@ -8,6 +8,7 @@ _INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS ix_request_logs_upstream_decision ON request_logs (upstream_id, decision)",
     "CREATE INDEX IF NOT EXISTS ix_alerts_status_ts ON alerts (status, ts)",
     "CREATE INDEX IF NOT EXISTS ix_blocklist_type_value_active ON blocklist (target_type, value, active)",
+    "CREATE INDEX IF NOT EXISTS ix_upstreams_organization_id ON upstreams (organization_id)",
 )
 
 # Columns introduced after initial schema — added via ALTER when missing (SQLite + Postgres).
@@ -89,6 +90,9 @@ def _ensure_extra_columns() -> None:
         if "openapi_spec_json" not in up_cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE upstreams ADD COLUMN openapi_spec_json TEXT"))
+        if "organization_id" not in up_cols:
+            with engine.begin() as conn:
+                conn.execute(text("ALTER TABLE upstreams ADD COLUMN organization_id INTEGER"))
 
 
 def create_db_and_tables() -> None:

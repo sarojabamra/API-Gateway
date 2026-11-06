@@ -2,9 +2,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
+from app.config import settings
 from app.db import get_session
 from app.models import Organization, User, to_ist_iso
 from app.api.v1.deps import VALID_ROLES, get_current_user, hash_password, require_roles
+from app.api.v1.org_access import require_visible_project
 from app.gateway.pipeline import gateway_state
 
 router = APIRouter(prefix="/settings", tags=["System Settings & RBAC User Management"])
@@ -71,6 +73,9 @@ def get_settings_and_users(
             "auto_block_duration_minutes": gateway_state.auto_block_duration_minutes,
             "anomaly_zscore_threshold": gateway_state.anomaly_zscore_threshold,
             "retention_days": 30,
+            "alert_email_enabled": settings.ALERT_EMAIL_ENABLED,
+            "alert_email_smtp_configured": bool((settings.SMTP_HOST or "").strip()),
+            "alert_email_from": settings.SMTP_FROM,
         },
         "organization": (
             {
@@ -187,6 +192,23 @@ def update_user_role(
         "organization_id": u.organization_id,
         "updated_by": admin.email,
     }
+
+
+@router.post("/circuit-breaker/reset")
+def reset_circuit_breakers(
+    upstream_id: Optional[int] = None,
+    session: Session = Depends(get_session),
+    user: User = Depends(require_roles(["admin", "analyst", "developer"])),
+):
+    """Clear OPEN circuit breakers after fixing an upstream URL / outage."""
+    from app.gateway.circuit_breaker import circuit_breaker
+
+    if upstream_id is not None:
+        require_visible_project(session, user, upstream_id)
+        circuit_breaker.reset(f"up-{upstream_id}")
+        return {"status": "reset", "upstream_key": f"up-{upstream_id}"}
+    circuit_breaker.reset()
+    return {"status": "reset", "upstream_key": "all"}
 
 
 @router.post("/reseed")

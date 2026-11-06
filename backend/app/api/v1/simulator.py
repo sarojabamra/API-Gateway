@@ -5,7 +5,8 @@ from app.models import Route, Upstream
 from pydantic import BaseModel
 from app.models import User
 from app.schemas import SimulatorRunRequest, SimulatorTokenValidateRequest
-from app.api.v1.deps import require_roles
+from app.api.v1.deps import get_current_user, require_roles
+from app.api.v1.org_access import require_visible_project
 from app.attack_sim.scenarios import SCENARIO_CATALOG, execute_attack_scenario
 from app.attack_sim.targeting import list_scenario_route_options, plan_scenario_targets
 from app.gateway.auth import resolve_simulator_user_jwt
@@ -18,10 +19,9 @@ router = APIRouter(prefix="/simulator", tags=["Attack Simulator & Gateway Mode S
 def list_attack_scenarios(
     upstream_id: int = Query(1),
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
-    upstream = session.get(Upstream, upstream_id)
-    if not upstream:
-        raise HTTPException(status_code=404, detail="Selected API project was not found")
+    upstream = require_visible_project(session, user, upstream_id)
     routes = session.exec(
         select(Route).where(Route.upstream_id == upstream_id, Route.registered == True)
     ).all()
@@ -82,8 +82,9 @@ def toggle_gateway_protection(
 def validate_simulator_token(
     payload: SimulatorTokenValidateRequest,
     session: Session = Depends(get_session),
-    _user: User = Depends(require_roles(["admin", "analyst", "developer"])),
+    user: User = Depends(require_roles(["admin", "analyst", "developer"])),
 ):
+    require_visible_project(session, user, payload.upstream_id)
     if not (payload.token or "").strip():
         raise HTTPException(status_code=400, detail="Invalid JWT: token is empty")
     try:
@@ -103,8 +104,10 @@ def validate_simulator_token(
 async def run_attack_simulation(
     payload: SimulatorRunRequest,
     request: Request,
-    _user: User = Depends(require_roles(["admin", "analyst", "developer"])),
+    session: Session = Depends(get_session),
+    user: User = Depends(require_roles(["admin", "analyst", "developer"])),
 ):
+    require_visible_project(session, user, payload.upstream_id)
     try:
         return await execute_attack_scenario(
             payload.scenario_id,

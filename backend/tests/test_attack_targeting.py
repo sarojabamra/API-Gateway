@@ -50,10 +50,13 @@ def test_parking_like_targets():
     assert login.applicable
     assert login.route("login").path_pattern == "/auth/login"
 
-    bola = plan_scenario_targets("bola_enum", routes)
-    assert bola.applicable
-    # Prefer equals_sub user history over booking resource
-    assert bola.route("bola").path_pattern == "/parking/users/{user_id}/history"
+    cross = plan_scenario_targets("bola_cross_user", routes)
+    assert cross.applicable
+    assert cross.route("user_route").path_pattern == "/parking/users/{user_id}/history"
+
+    # Booking delete is a resource route, but enumeration only uses GET.
+    enum = plan_scenario_targets("bola_enum", routes)
+    assert enum.applicable is False
 
     admin = plan_scenario_targets("bfla_admin", routes)
     assert admin.applicable
@@ -87,9 +90,12 @@ def test_trello_like_targets():
             bola_owner_param="userId",
         ),
     ]
-    bola = plan_scenario_targets("bola_enum", routes)
-    assert bola.route("bola").path_pattern == "/users/{userId}/boards"
-    assert bola.route("bola").method == "GET"
+    cross = plan_scenario_targets("bola_cross_user", routes)
+    assert cross.route("user_route").path_pattern == "/users/{userId}/boards"
+    assert cross.route("user_route").method == "GET"
+
+    enum = plan_scenario_targets("bola_enum", routes)
+    assert enum.applicable is False
 
     jwt = plan_scenario_targets("jwt_tamper", routes)
     assert jwt.applicable
@@ -116,6 +122,13 @@ def test_vulnshop_prefers_demo_routes():
             bola_mode="equals_sub",
             bola_owner_param="id",
         ),
+        _route(
+            method="GET",
+            path_pattern="/orders/{id}",
+            bola_check_enabled=True,
+            bola_mode="learned_owner",
+            bola_owner_param="id",
+        ),
         _route(method="GET", path_pattern="/products", auth_required=False),
         _route(method="GET", path_pattern="/search", auth_required=False),
         _route(method="GET", path_pattern="/fetch"),
@@ -128,6 +141,8 @@ def test_vulnshop_prefers_demo_routes():
     assert plan_scenario_targets("ssrf_metadata", routes).route("fetch").path_pattern == "/fetch"
     assert plan_scenario_targets("unsafe_api_consume", routes).route("supplier").path_pattern == "/supplier/catalog"
     assert plan_scenario_targets("coupon_scalp", routes).route("sensitive").path_pattern == "/coupons/redeem"
+    assert plan_scenario_targets("bola_cross_user", routes).route("user_route").path_pattern == "/users/{id}"
+    assert plan_scenario_targets("bola_enum", routes).route("object_route").path_pattern == "/orders/{id}"
     assert plan_scenario_targets("data_exposure", routes).route("read").path_pattern == "/users/me"
     assert plan_scenario_targets("data_exposure", routes).route("write").path_pattern == "/auth/register"
 

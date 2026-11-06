@@ -261,7 +261,7 @@ export const AttackSimulatorPage: React.FC = () => {
           <div className="space-y-1 max-w-2xl">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-mono uppercase tracking-wider text-cyan-400">
-                OWASP API Security Top 10 (2023)
+                {owaspData?.edition || 'OWASP API Security Top 10 (2025)'}
               </span>
               <span
                 className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold ${
@@ -490,6 +490,7 @@ export const AttackSimulatorPage: React.FC = () => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[420px] overflow-y-auto pr-1">
             {(lastResult.steps || []).map((step: any, idx: number) => {
               const isBlocked = step.blocked_by_gateway;
+              const isSuccess = !isBlocked && step.status_code >= 200 && step.status_code < 300;
               return (
                 <div
                   key={idx}
@@ -508,7 +509,7 @@ export const AttackSimulatorPage: React.FC = () => {
                           : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                       }`}
                     >
-                      HTTP {step.status_code} ({isBlocked ? 'BLOCKED' : 'PASSED'})
+                      HTTP {step.status_code} ({isBlocked ? 'BLOCKED' : isSuccess ? 'SUCCESS' : 'PASSED'})
                     </span>
                   </div>
                   <div className="text-[10px] text-slate-400 mb-1.5">

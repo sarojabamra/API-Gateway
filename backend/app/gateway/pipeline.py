@@ -5,6 +5,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from fastapi import BackgroundTasks, Request, Response
+from fastapi.responses import JSONResponse
 import httpx
 from sqlalchemy import update
 from sqlmodel import Session, select
@@ -199,6 +200,15 @@ def _rewrite_swagger_if_needed(
             media_type = v.split(";")[0].strip()
             break
 
+    def _set_content_type(target: Dict[str, str], value: str) -> None:
+        # Starlette Response uses headers.setdefault("content-type", media_type), so an
+        # upstream Content-Type: application/json would otherwise win over media_type=text/html
+        # and Firefox would open /docs in its JSON viewer (SyntaxError on <!DOCTYPE).
+        for k in list(target.keys()):
+            if k.lower() == "content-type":
+                del target[k]
+        target["Content-Type"] = value
+
     clean_doc_path = norm_path.rstrip("/") or "/"
     if clean_doc_path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
         media_type = "text/html"
@@ -229,6 +239,7 @@ def _rewrite_swagger_if_needed(
             "img-src 'self' data: https: http:; "
             "connect-src *"
         )
+        _set_content_type(headers, "text/html; charset=utf-8")
         return rewritten, headers, media_type
 
     if clean_doc_path == "/openapi.json":
@@ -259,6 +270,7 @@ def _rewrite_swagger_if_needed(
                                 flow["tokenUrl"] = f"{gw_prefix}{token_url}"
                             elif not token_url.startswith(("http://", "https://")):
                                 flow["tokenUrl"] = f"{gw_prefix}/{token_url.lstrip('/')}"
+                _set_content_type(headers, "application/json")
                 return json.dumps(spec), headers, "application/json"
         except Exception:
             pass
@@ -266,6 +278,7 @@ def _rewrite_swagger_if_needed(
         # Upstream did not return a valid OpenAPI JSON (e.g. returned SPA index.html or 404).
         # Synthesize a complete OpenAPI 3.0 spec from SentinelGW's registered routes!
         synthesized = _build_synthesized_openapi_spec(upstream, registered_routes or [], gw_prefix)
+        _set_content_type(headers, "application/json")
         return json.dumps(synthesized), headers, "application/json"
 
     return body_text, headers, media_type
@@ -361,19 +374,26 @@ async def execute_gateway_pipeline(
 
     with Session(engine) as session:
         all_upstreams = _cached_upstreams(session)
-        upstream = next((u for u in all_upstreams if u.enabled), all_upstreams[0] if all_upstreams else None)
-
-        # Track whether the caller used a slug prefix (/gw/{slug}/...) so we can rewrite /docs and /openapi.json
-        gw_prefix = "/gw"
         parts = [p for p in norm_path.split("/") if p]
-        if parts:
-            matched_by_slug = next((u for u in all_upstreams if u.slug.lower() == parts[0].lower()), None)
-            if matched_by_slug:
-                upstream = matched_by_slug
-                gw_prefix = f"/gw/{matched_by_slug.slug}"
-                norm_path = "/" + "/".join(parts[1:])
+        matched_by_slug = next(
+            (u for u in all_upstreams if parts and u.slug.lower() == parts[0].lower()),
+            None,
+        )
+        if matched_by_slug is None:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "Unknown project",
+                    "message": "Every gateway request needs a project path: /gw/{project-slug}/... . There is no default /gw route.",
+                    "request_id": request_id,
+                },
+                headers={"X-Request-ID": request_id},
+            )
 
-        upstream_id = upstream.id if upstream else 1
+        upstream = matched_by_slug
+        gw_prefix = f"/gw/{matched_by_slug.slug}"
+        norm_path = "/" + "/".join(parts[1:]) if len(parts) > 1 else "/"
+        upstream_id = upstream.id
         is_swagger_doc_route = (norm_path.rstrip("/") or "/") in (
             "/docs",
             "/redoc",
@@ -1355,8 +1375,28 @@ async def _forward_to_upstream(
                     return bridged
         return resp.status_code, dict(resp.headers), resp.text
     except Exception as exc:
-        err_body = json.dumps({"error": "Bad Gateway", "detail": "Upstream connection failed"})
-        return 502, {"Content-Type": "application/json"}, err_body
+        # Safe, non-stack message — helps diagnose Docker→host upstream misconfig
+        # (e.g. Inventory base_url still pointing at 127.0.0.1 from inside a container).
+        from urllib.parse import urlparse as _urlparse
+
+        parsed_up = _urlparse(base_url if "://" in (base_url or "") else f"http://{base_url or ''}")
+        up_host = parsed_up.hostname or "unknown-host"
+        up_port = parsed_up.port or (443 if (parsed_up.scheme or "http").lower() == "https" else 80)
+        hint = ""
+        if up_host in ("127.0.0.1", "localhost"):
+            hint = (
+                " If SentinelGW runs in Docker, change this project's Backend URL in Inventory "
+                "to http://host.docker.internal:PORT (or your host LAN IP), not 127.0.0.1."
+            )
+        err_body = json.dumps({
+            "error": "Bad Gateway",
+            "message": (
+                f"Could not connect to upstream {up_host}:{up_port} "
+                f"({type(exc).__name__}).{hint}"
+            ),
+            "detail": "Upstream connection failed",
+        })
+        return 502, {"Content-Type": "application/json", "X-Gateway-Upstream-Host": f"{up_host}:{up_port}"}, err_body
 
 
 async def _reject_request(

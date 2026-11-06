@@ -6,7 +6,10 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 from app.db import get_session
-from app.models import Alert, BlocklistEntry, Policy, RequestLog, Route, to_ist_iso
+from app.models import Alert, BlocklistEntry, Policy, RequestLog, Route, User, to_ist_iso
+from app.api.v1.deps import get_current_user
+from app.api.v1.org_access import visible_upstream_ids
+from app.detection.engine import get_alert_upstream_id
 
 router = APIRouter(prefix="/reports", tags=["Executive Reports & CSV/PDF Export"])
 
@@ -15,6 +18,7 @@ router = APIRouter(prefix="/reports", tags=["Executive Reports & CSV/PDF Export"
 def generate_executive_report(
     time_range: str = Query("24h"),
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
     window = {
         "15m": timedelta(minutes=15),
@@ -23,14 +27,24 @@ def generate_executive_report(
         "7d": timedelta(days=7),
     }.get(time_range, timedelta(hours=24))
     cutoff = datetime.now(timezone.utc) - window
-    logs = session.exec(
-        select(RequestLog).where(RequestLog.ts >= cutoff).order_by(RequestLog.ts.desc()).limit(20000)
-    ).all()
+    org_ids = visible_upstream_ids(session, user)
+    if org_ids:
+        logs = session.exec(
+            select(RequestLog)
+            .where(RequestLog.ts >= cutoff, RequestLog.upstream_id.in_(org_ids))
+            .order_by(RequestLog.ts.desc())
+            .limit(20000)
+        ).all()
+        routes = session.exec(select(Route).where(Route.upstream_id.in_(org_ids))).all()
+    else:
+        logs = []
+        routes = []
     alerts = session.exec(
         select(Alert).where(Alert.ts >= cutoff).order_by(Alert.ts.desc()).limit(5000)
     ).all()
+    org_id_set = set(org_ids)
+    alerts = [alert for alert in alerts if get_alert_upstream_id(alert) in org_id_set]
     policies = session.exec(select(Policy)).all()
-    routes = session.exec(select(Route)).all()
     blocks = session.exec(select(BlocklistEntry).where(BlocklistEntry.active == True)).all()
 
     total_reqs = len(logs)
@@ -85,8 +99,21 @@ def generate_executive_report(
 
 
 @router.get("/export/traffic.csv")
-def export_traffic_csv(session: Session = Depends(get_session)):
-    logs = session.exec(select(RequestLog).order_by(RequestLog.ts.desc()).limit(1000)).all()
+def export_traffic_csv(
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    org_ids = visible_upstream_ids(session, user)
+    logs = (
+        session.exec(
+            select(RequestLog)
+            .where(RequestLog.upstream_id.in_(org_ids))
+            .order_by(RequestLog.ts.desc())
+            .limit(1000)
+        ).all()
+        if org_ids
+        else []
+    )
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -129,8 +156,16 @@ def export_traffic_csv(session: Session = Depends(get_session)):
 
 
 @router.get("/export/alerts.csv")
-def export_alerts_csv(session: Session = Depends(get_session)):
-    alerts = session.exec(select(Alert).order_by(Alert.ts.desc())).all()
+def export_alerts_csv(
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    org_ids = set(visible_upstream_ids(session, user))
+    alerts = [
+        alert
+        for alert in session.exec(select(Alert).order_by(Alert.ts.desc())).all()
+        if get_alert_upstream_id(alert) in org_ids
+    ]
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([

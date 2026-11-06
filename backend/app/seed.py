@@ -28,8 +28,21 @@ DEMO_UPSTREAM_SLUG = "vulnshop"
 DEMO_UPSTREAM_NAME = "VulnShop (Demo Project)"
 
 
+def assign_unscoped_projects(session: Session) -> None:
+    """Attach projects created before org scoping to the demo organization."""
+    demo_org = ensure_demo_organization(session)
+    changed = False
+    for project in session.exec(select(Upstream).where(Upstream.organization_id == None)).all():
+        project.organization_id = demo_org.id
+        session.add(project)
+        changed = True
+    if changed:
+        session.commit()
+
+
 def backfill_route_security_defaults(session: Session) -> None:
     """Apply safe inferred defaults to routes imported before metadata inference existed."""
+    assign_unscoped_projects(session)
     import re
     from app.gateway.policy_engine import is_user_like_param
     from app.runtime_cache import runtime_cache
@@ -236,6 +249,7 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
         if existing_user:
             # Keep older DBs usable after the organizations feature lands.
             ensure_seeded_users(session, reset_credentials=False)
+            assign_unscoped_projects(session)
             return
 
     if force_reset:
@@ -257,12 +271,14 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
     now = datetime.now(timezone.utc)
 
     # 1. Seed demo organization + RBAC users. Registered accounts are preserved.
+    demo_org = ensure_demo_organization(session)
     ensure_seeded_users(session, reset_credentials=force_reset)
 
     # 2. Seed Protected Upstream (VulnShop — built-in intentionally vulnerable demo API)
     upstream = Upstream(
         name=DEMO_UPSTREAM_NAME,
         slug=DEMO_UPSTREAM_SLUG,
+        organization_id=demo_org.id,
         base_url="http://127.0.0.1:8000/demo",
         auth_mode="both",
         enabled=True,
@@ -962,8 +978,8 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
                 "engine": "SentinelAI Neural Threat Triage Engine",
                 "confidence_score": 98,
                 "executive_summary": "Critical SSRF exploitation attempt from IP 203.0.113.199 attempting to extract AWS IAM Instance Profile credentials via the link-local metadata service (169.254.169.254). All 8 requests were intercepted and blocked at the gateway perimeter.",
-                "attack_classification": "Cloud Metadata SSRF (API7:2023 - Server Side Request Forgery)",
-                "owasp_mapping": "API7:2023 - Server-Side Request Forgery",
+                "attack_classification": "Cloud Metadata SSRF (API7:2025 - Server Side Request Forgery)",
+                "owasp_mapping": "API7:2025 - Server-Side Request Forgery",
                 "root_cause_analysis": "Upstream `/fetch` endpoint fetches arbitrary URLs supplied in the `url` query parameter without egress allowlisting or link-local IP filtering.",
                 "blast_radius": "Contained at gateway edge (0 bytes exfiltrated). Without gateway protection, temporary AWS IAM AccessKeyId and SecretAccessKey are leaked.",
                 "recommended_actions": [
@@ -1000,8 +1016,8 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
                 "engine": "SentinelAI Neural Threat Triage Engine",
                 "confidence_score": 97,
                 "executive_summary": "Attacker at 198.51.100.202 attempted to bypass JWT verification by stripping the HMAC signature and setting header `alg: none` while elevating claim `role: admin`. Blocked by Step 2 of the gateway's 8-point JWT checklist.",
-                "attack_classification": "JWT Algorithm Downgrade & Forgery (API2:2023 - Broken Authentication)",
-                "owasp_mapping": "API2:2023 - Broken Authentication",
+                "attack_classification": "JWT Algorithm Downgrade & Forgery (API2:2025 - Broken Authentication)",
+                "owasp_mapping": "API2:2025 - Broken Authentication",
                 "root_cause_analysis": "Adversary probing for unpinned JWT verification libraries that honor the token header's `alg` field.",
                 "blast_radius": "Contained at gateway edge (all 9 forged tokens rejected with 401 Unauthorized).",
                 "recommended_actions": [
@@ -1037,8 +1053,8 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
                 "engine": "SentinelAI Neural Threat Triage Engine",
                 "confidence_score": 94,
                 "executive_summary": "Authenticated user 'user-101' performed sequential horizontal ID enumeration across `/users/{id}` to harvest other customers' PII. Blocked by the Gateway BOLA ownership rule.",
-                "attack_classification": "Horizontal Privilege Escalation / IDOR (API1:2023 - BOLA)",
-                "owasp_mapping": "API1:2023 - Broken Object Level Authorization",
+                "attack_classification": "Horizontal Privilege Escalation / IDOR (API1:2025 - BOLA)",
+                "owasp_mapping": "API1:2025 - Broken Object Level Authorization",
                 "root_cause_analysis": "Upstream `/users/{id}` handler looks up records by primary key without verifying caller ownership.",
                 "blast_radius": "Zero records leaked (blocked with 403 Forbidden at Stage 6).",
                 "recommended_actions": [
@@ -1073,8 +1089,8 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
                 "engine": "SentinelAI Neural Threat Triage Engine",
                 "confidence_score": 93,
                 "executive_summary": "Standard customer token ('user-102', role='user') repeatedly probed `/admin/users`. The gateway enforced RBAC policy and rejected the vertical privilege escalation attempt.",
-                "attack_classification": "Vertical Privilege Escalation (API5:2023 - BFLA)",
-                "owasp_mapping": "API5:2023 - Broken Function Level Authorization",
+                "attack_classification": "Vertical Privilege Escalation (API5:2025 - BFLA)",
+                "owasp_mapping": "API5:2025 - Broken Function Level Authorization",
                 "root_cause_analysis": "Upstream `/admin/users` endpoint lacks an internal role check decorator.",
                 "blast_radius": "Contained at gateway edge.",
                 "recommended_actions": [
@@ -1110,7 +1126,7 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
                 "confidence_score": 95,
                 "executive_summary": "Automated vulnerability scanner (sqlmap / Nuclei) at 203.0.113.250 launched UNION-based SQL injection attacks against `/search` and probed undocumented `/internal/debug`.",
                 "attack_classification": "SQL Injection & Shadow Endpoint Recon (API8 & API9)",
-                "owasp_mapping": "API8:2023 - Security Misconfiguration / Injection",
+                "owasp_mapping": "API8:2025 - Security Misconfiguration / Injection",
                 "root_cause_analysis": "Unparameterized string concatenation in upstream search query and exposed debug handler.",
                 "blast_radius": "Blocked at Stage 4 & Stage 8 before reaching upstream database.",
                 "recommended_actions": [
@@ -1144,8 +1160,8 @@ def seed_all_data(session: Session, force_reset: bool = False) -> None:
                 "engine": "SentinelAI Neural Threat Triage Engine",
                 "confidence_score": 92,
                 "executive_summary": "Client 203.0.113.88 spiked to 52 RPM (4.65 standard deviations above baseline) attempting to drain promotional coupon codes on `/coupons/redeem`. Throttled with HTTP 429.",
-                "attack_classification": "Automated Business Flow Scalping (API6:2023)",
-                "owasp_mapping": "API6:2023 - Unrestricted Access to Sensitive Business Flows",
+                "attack_classification": "Automated Business Flow Scalping (API6:2025)",
+                "owasp_mapping": "API6:2025 - Unrestricted Access to Sensitive Business Flows",
                 "root_cause_analysis": "Upstream coupon endpoint lacks per-account redemption velocity locks.",
                 "blast_radius": "Promo pool protected after initial burst of 4 requests.",
                 "recommended_actions": [

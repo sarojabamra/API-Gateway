@@ -37,6 +37,7 @@ interface GatewayState {
   addToast: (toast: Omit<ToastNotification, 'id'>) => void;
   dismissToast: (id: string) => void;
   setSelectedProject: (id: number, name: string, slug: string) => void;
+  clearSelectedProject: () => void;
   canMutate: (allowedRoles?: UserRole[]) => boolean;
 }
 
@@ -66,15 +67,42 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   selectedProjectSlug: localStorage.getItem('sentinel_project_slug') || '',
 
   setAuth: (token, user) => {
+    const previousOrg = get().user?.organization_id;
     localStorage.setItem('sentinel_token', token);
     localStorage.setItem('sentinel_user', JSON.stringify(user));
+    if (previousOrg != null && previousOrg !== user.organization_id) {
+      localStorage.removeItem('sentinel_project_id');
+      localStorage.removeItem('sentinel_project_name');
+      localStorage.removeItem('sentinel_project_slug');
+      set({
+        token,
+        user,
+        selectedProjectId: null,
+        selectedProjectName: '',
+        selectedProjectSlug: '',
+        liveTraffic: [],
+        liveAlerts: [],
+      });
+      return;
+    }
     set({ token, user });
   },
 
   logout: () => {
     localStorage.removeItem('sentinel_token');
     localStorage.removeItem('sentinel_user');
-    set({ token: null, user: null });
+    localStorage.removeItem('sentinel_project_id');
+    localStorage.removeItem('sentinel_project_name');
+    localStorage.removeItem('sentinel_project_slug');
+    set({
+      token: null,
+      user: null,
+      selectedProjectId: null,
+      selectedProjectName: '',
+      selectedProjectSlug: '',
+      liveTraffic: [],
+      liveAlerts: [],
+    });
   },
 
   setGatewayEnabled: (gatewayEnabled) => set({ gatewayEnabled }),
@@ -120,6 +148,13 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     localStorage.setItem('sentinel_project_name', selectedProjectName);
     localStorage.setItem('sentinel_project_slug', selectedProjectSlug);
     set({ selectedProjectId, selectedProjectName, selectedProjectSlug });
+  },
+
+  clearSelectedProject: () => {
+    localStorage.removeItem('sentinel_project_id');
+    localStorage.removeItem('sentinel_project_name');
+    localStorage.removeItem('sentinel_project_slug');
+    set({ selectedProjectId: null, selectedProjectName: '', selectedProjectSlug: '' });
   },
 
   canMutate: (allowedRoles = ['admin', 'analyst', 'developer']) => {

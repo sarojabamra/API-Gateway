@@ -1,6 +1,6 @@
 # SentinelGW — Role-Based User & Operational Guide
 
-Welcome to **SentinelGW**, an **OWASP API Security Top 10 (2023)** Enforcement Gateway & Real-Time Threat Monitoring Platform.
+Welcome to **SentinelGW**, an **OWASP API Security Top 10 (2025)** Enforcement Gateway & Real-Time Threat Monitoring Platform.
 
 This operational guide walks you through **SentinelGW** from the perspective of all **5 user roles**, provides a **5-minute Judge/Demo Walkthrough**, and explains how every page, enforcement policy, and detection engine works together.
 
@@ -33,7 +33,7 @@ Follow this exact sequence to experience the full closed-loop lifecycle (**Unpro
 2. **Prove `VulnShop` Is Vulnerable When Unprotected (`/simulator`)**
    - Navigate to **Attack Simulator (`/simulator`)**.
    - Click **GATEWAY OFF** in the top banner. The status indicator turns red (`VULNSHOP EXPOSED (PASS-THROUGH)`).
-   - Click **Launch Attack Scenario** on **API1:2023 — BOLA ID Enumeration** or **API7:2023 — Cloud Metadata SSRF**.
+   - Click **Launch Attack Scenario** on **API1:2025 — BOLA ID Enumeration** or **API7:2025 — Cloud Metadata SSRF**.
    - Observe in the **Execution Output Console** that `VulnShop` returns `HTTP 200 OK` with raw user SSNs, password hashes, and simulated AWS IAM credentials (`ASIAIOSFODNN7EXAMPLE`).
 3. **Arm SentinelGW & Block All 8 OWASP Attacks (`/simulator`)**
    - Click **GATEWAY ON** in the Attack Simulator banner (`SHIELD ARMED`).
@@ -59,7 +59,7 @@ Follow this exact sequence to experience the full closed-loop lifecycle (**Unpro
 #### Step-by-Step Workflows:
 1. **Manage Security Policies (`/policies`)**
    - Toggle any policy between **Enforce (Block)** and **Monitor (Log Only / Dry-Run)**.
-   - Click **New Policy** to author a custom OWASP rule mapped to `API1:2023`–`API9:2023`.
+   - Click **New Policy** to author a custom OWASP rule mapped to `API1:2025`–`API9:2025`.
 2. **Tune Rate Limits & Verify with Burst Tester (`/rate-limits`)**
    - Inspect per-route **fixed-window** and **token bucket** limits. Counters are stored in Redis when `REDIS_URL` is set.
    - Select a route and fire a **25-Request Instant Burst** in the **Interactive Burst Tester** to verify exact `200 OK` vs `429 Too Many Requests` cutoffs and `Retry-After` headers.
@@ -94,7 +94,7 @@ Follow this exact sequence to experience the full closed-loop lifecycle (**Unpro
 
 #### Step-by-Step Workflows:
 1. **Discover & Remediate Shadow APIs (`/inventory`)**
-   - Open **API Inventory (`/inventory`)** and switch to the **Shadow & Legacy APIs (`API9:2023`)** tab.
+   - Open **API Inventory (`/inventory`)** and switch to the **Shadow & Legacy APIs (`API9:2025`)** tab.
    - Review undocumented endpoints discovered automatically by SentinelGW (such as `/gw/internal/debug` and `/gw/v1/users`).
    - Click **Promote to Inventory** to register a legitimate endpoint, or **Block Shadow Endpoint** to lock down an unmaintained debug route.
 2. **Import OpenAPI 3.0 Specifications (`/inventory`)**
@@ -114,7 +114,7 @@ Follow this exact sequence to experience the full closed-loop lifecycle (**Unpro
 
 #### Step-by-Step Workflows:
 1. **Audit OWASP API Top 10 Coverage (`/owasp`)**
-   - Review all 10 categories (`API1:2023` through `API10:2023`), including active enforcing rule counts, 24-hour blocked event metrics, and `API10:2023` unsafe third-party URL stripping on upstream responses (e.g. `/gw/supplier/catalog`).
+   - Review all 10 categories (`API1:2025` through `API10:2025`), including active enforcing rule counts, 24-hour blocked event metrics, and `API10:2025` unsafe third-party URL stripping on upstream responses (e.g. `/gw/supplier/catalog`).
 2. **Generate & Export Compliance Reports (`/reports`)**
    - Open **Compliance Reports (`/reports`)** to view the **Overall Security Posture Score** and incident breakdown.
    - Click **Export Traffic (CSV)**, **Export Alerts (CSV)**, or **Print / Save PDF Report**.
@@ -131,9 +131,9 @@ External API clients and scripts interact directly with the Gateway Data Plane (
 # 1. Mint a test JWT or use an API key
 curl -i http://localhost:8000/gw/products?limit=5
 
-# 2. Attempt BOLA (User 101 accessing User 102's profile) -> Blocked 403 API1:2023
+# 2. Attempt BOLA (User 101 accessing User 102's profile) -> Blocked 403 API1:2025
 curl -i -H "X-API-Key: sgw_live_alice_101_secret" http://localhost:8000/gw/users/102
 
-# 3. Attempt SSRF against AWS IMDSv1 -> Blocked 400 API7:2023
+# 3. Attempt SSRF against AWS IMDSv1 -> Blocked 400 API7:2025
 curl -i "http://localhost:8000/gw/fetch?url=http://169.254.169.254/latest/meta-data/iam"
 ```

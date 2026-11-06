@@ -41,8 +41,10 @@ export const MainLayout: React.FC = () => {
     toasts,
     dismissToast,
     addToast,
+    token,
     selectedProjectId,
     setSelectedProject,
+    clearSelectedProject,
   } = useGatewayStore();
   const navigate = useNavigate();
   const location = useLocation();
@@ -81,21 +83,26 @@ export const MainLayout: React.FC = () => {
         const res = await apiFetch('/inventory');
         const items = res.upstreams || [];
         setProjects(items);
-        if (items.length && !items.some((p: any) => p.id === selectedProjectId)) {
-          const active = items.find((p: any) => p.enabled) || items[0];
-          setSelectedProject(active.id, active.name, active.slug);
+        if (!items.some((p: any) => p.id === selectedProjectId)) {
+          if (items.length) {
+            const active = items[0];
+            setSelectedProject(active.id, active.name, active.slug);
+          } else if (selectedProjectId) {
+            clearSelectedProject();
+          }
         }
       } catch {
         // Project picker remains hidden until the API is available.
       }
     };
     loadProjects();
-  }, [selectedProjectId, setSelectedProject]);
+  }, [selectedProjectId, setSelectedProject, clearSelectedProject]);
 
   // Connect WebSocket for live traffic and alerts with automatic reconnect
   useEffect(() => {
+    if (!token) return;
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/ws/live`;
+    const wsUrl = `${proto}//${window.location.host}/ws/live?token=${encodeURIComponent(token)}`;
     let ws: WebSocket | null = null;
     let pingTimer: any = null;
     let reconnectTimer: any = null;
@@ -141,7 +148,7 @@ export const MainLayout: React.FC = () => {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [pushLiveTraffic, pushLiveAlert]);
+  }, [token, pushLiveTraffic, pushLiveAlert]);
 
   const handleToggleGateway = async () => {
     try {

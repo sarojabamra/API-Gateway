@@ -7,7 +7,8 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models import Alert, BlocklistEntry, ClientBaseline, Policy, RequestLog, RevokedToken, User, to_ist_iso
 from app.schemas import AlertActionRequest, AlertBulkActionRequest
-from app.api.v1.deps import require_roles
+from app.api.v1.deps import get_current_user, require_roles
+from app.api.v1.org_access import require_visible_project
 from app.detection.ai_triage import generate_ai_triage_summary
 from app.detection.engine import get_alert_upstream_id
 
@@ -22,7 +23,9 @@ def list_alerts(
     search: Optional[str] = None,
     upstream_id: int = Query(1),
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
+    require_visible_project(session, user, upstream_id)
     alerts = session.exec(select(Alert).order_by(Alert.ts.desc())).all()
     items = []
     project_alerts = []
@@ -80,21 +83,34 @@ def bulk_update_alerts(
     updated = 0
     for aid in payload.alert_ids:
         alert = session.get(Alert, aid)
-        if alert:
-            alert.status = payload.status
-            alert.updated_at = datetime.now(timezone.utc)
-            alert.assigned_to = alert.assigned_to or user.email
-            session.add(alert)
-            updated += 1
+        if not alert:
+            continue
+        try:
+            require_visible_project(session, user, get_alert_upstream_id(alert))
+        except HTTPException:
+            continue
+        alert.status = payload.status
+        alert.updated_at = datetime.now(timezone.utc)
+        alert.assigned_to = alert.assigned_to or user.email
+        session.add(alert)
+        updated += 1
     session.commit()
     return {"status": "ok", "updated_count": updated}
 
 
 @router.get("/{alert_id}")
-def get_alert_detail(alert_id: int, session: Session = Depends(get_session)):
+def get_alert_detail(
+    alert_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     alert = session.get(Alert, alert_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    try:
+        require_visible_project(session, user, get_alert_upstream_id(alert))
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Alert not found") from None
     try:
         alert_evidence = json.loads(alert.evidence_json or "{}")
     except Exception:
@@ -197,6 +213,10 @@ async def execute_alert_action(
     alert = session.get(Alert, alert_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
+    try:
+        require_visible_project(session, user, get_alert_upstream_id(alert))
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Alert not found") from None
 
     notes = json.loads(alert.notes_json or "[]")
     now_iso = to_ist_iso(datetime.now(timezone.utc))
@@ -334,7 +354,7 @@ async def execute_alert_action(
     session.commit()
     session.refresh(alert)
 
-    return get_alert_detail(alert_id, session)
+    return get_alert_detail(alert_id, session, user)
 
 
 @router.post("/{alert_id}/ai-triage")
@@ -346,7 +366,15 @@ async def generate_alert_ai_triage_endpoint(
     alert = session.get(Alert, alert_id)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    logs = session.exec(select(RequestLog).where(RequestLog.client_ip == alert.client_ip).limit(10)).all()
+    try:
+        project = require_visible_project(session, user, get_alert_upstream_id(alert))
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Alert not found") from None
+    logs = session.exec(
+        select(RequestLog)
+        .where(RequestLog.client_ip == alert.client_ip, RequestLog.upstream_id == project.id)
+        .limit(10)
+    ).all()
     ai_summary = await generate_ai_triage_summary(alert, list(logs))
     alert.ai_summary_json = json.dumps(ai_summary)
     alert.updated_at = datetime.now(timezone.utc)

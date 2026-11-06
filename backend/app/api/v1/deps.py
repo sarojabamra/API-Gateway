@@ -36,14 +36,8 @@ def create_dashboard_token(user: User) -> str:
     return jwt.encode(payload, settings.DASHBOARD_JWT_SECRET, algorithm=settings.DASHBOARD_JWT_ALGORITHM)
 
 
-def get_current_user(
-    authorization: Optional[str] = Header(default=None),
-    session: Session = Depends(get_session),
-) -> User:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    raw = authorization.split(" ", 1)[1].strip()
+def authenticate_access_token(token: str, session: Session) -> User:
+    raw = (token or "").strip()
     if not raw:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -66,6 +60,17 @@ def get_current_user(
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="User inactive or not found")
     return user
+
+
+def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+    session: Session = Depends(get_session),
+) -> User:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    raw = authorization.split(" ", 1)[1].strip()
+    return authenticate_access_token(raw, session)
 
 
 def require_roles(allowed_roles: List[str]):

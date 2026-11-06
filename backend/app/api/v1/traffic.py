@@ -3,7 +3,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, or_, select
 from app.db import get_session
-from app.models import Alert, Policy, RequestLog, to_ist_iso
+from app.models import Alert, Policy, RequestLog, User, to_ist_iso
+from app.api.v1.deps import get_current_user
+from app.api.v1.org_access import require_visible_project
 
 router = APIRouter(prefix="/traffic", tags=["Live Traffic & Forensics"])
 
@@ -20,7 +22,9 @@ def list_traffic_logs(
     min_threat_score: int = 0,
     upstream_id: int = Query(1),
     session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
 ):
+    require_visible_project(session, user, upstream_id)
     stmt = select(RequestLog).where(RequestLog.upstream_id == upstream_id)
     if decision:
         stmt = stmt.where(RequestLog.decision == decision)
@@ -82,10 +86,18 @@ def list_traffic_logs(
 
 
 @router.get("/{log_id}")
-def get_traffic_log_detail(log_id: int, session: Session = Depends(get_session)):
+def get_traffic_log_detail(
+    log_id: int,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
     log = session.get(RequestLog, log_id)
     if not log:
         raise HTTPException(status_code=404, detail="Request log not found")
+    try:
+        require_visible_project(session, user, log.upstream_id or 0)
+    except HTTPException:
+        raise HTTPException(status_code=404, detail="Request log not found") from None
 
     policy_name = None
     if log.matched_policy_id:

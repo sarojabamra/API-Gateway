@@ -39,6 +39,17 @@ class Settings(BaseSettings):
     # Optional outbound webhook for critical alerts (JSON POST)
     WEBHOOK_URL: Optional[str] = None
 
+    # Email every active organization member when a new threat alert is opened.
+    ALERT_EMAIL_ENABLED: bool = True
+    SMTP_HOST: Optional[str] = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = None
+    SMTP_FROM: str = "alerts@sentinel.local"
+    SMTP_USE_TLS: bool = True
+    SMTP_USE_SSL: bool = False
+    DASHBOARD_BASE_URL: str = "http://localhost:5173"
+
     # Upstream response size cap (bytes) before Stage 10 truncates/sanitizes
     MAX_UPSTREAM_RESPONSE_BYTES: int = 1048576
 

@@ -10,6 +10,19 @@ router = APIRouter(tags=["VulnShop Demo Upstream API"])
 
 # Intentionally rich in-memory dataset with sensitive properties (to demonstrate API1, API3, API5)
 VULNSHOP_USERS: Dict[str, Dict[str, Any]] = {
+    "2": {
+        "id": "2",
+        "sub": "2",
+        "username": "user_two",
+        "email": "user2@vulnshop.io",
+        "role": "user",
+        "full_name": "User Two",
+        "password_hash": "$2b$12$demoHashForUserTwoOnly0002",
+        "ssn": "999-00-0002",
+        "credit_card": "4000-0000-0000-0002",
+        "loyalty_balance": 20.0,
+        "secret_note": "Caller used by the API1 cross-user simulator",
+    },
     "101": {
         "id": "101",
         "sub": "user-101",
@@ -86,6 +99,7 @@ VULNSHOP_PRODUCTS = [
 ]
 
 VULNSHOP_ORDERS: Dict[str, Dict[str, Any]] = {
+    "2": {"id": "2", "owner_sub": "2", "item": "User Two Receipt", "total": 12.00, "status": "paid", "credit_card": "4000-0000-0000-0002", "shipping_address": "2 Simulator Lane"},
     "5001": {"id": "5001", "owner_sub": "user-101", "item": "Hardware Security Key v1", "total": 59.99, "status": "shipped", "credit_card": "4532-8812-0091-4411", "shipping_address": "742 Evergreen Terrace"},
     "5002": {"id": "5002", "owner_sub": "user-102", "item": "Enterprise Firewall Appliance", "total": 1299.00, "status": "processing", "credit_card": "5412-7530-9910-2284", "shipping_address": "1600 Pennsylvania Ave"},
     "5003": {"id": "5003", "owner_sub": "admin-999", "item": "Zero-Trust HSM Cluster", "total": 14500.00, "status": "delivered", "credit_card": "3782-822463-10005", "shipping_address": "100 Cyber Command Way"},

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Users, RotateCcw, Plus, Building2, Shield, Power } from 'lucide-react';
+import { Users, RotateCcw, Plus, Building2, Shield, Power, Mail } from 'lucide-react';
 import { apiFetch, formatDateTimeIST } from '../lib/api';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { LoadError } from '../components/shared/LoadError';
@@ -203,6 +203,23 @@ export const SettingsUsersPage: React.FC = () => {
             Retention window: {system.retention_days || 30} days. Optional critical-alert webhook is configured via{' '}
             <code className="text-cyan-400">WEBHOOK_URL</code> on the backend.
           </p>
+          <div className="rounded-lg bg-slate-950/80 border border-slate-800 p-3 text-xs">
+            <div className="flex items-center gap-2 text-slate-200 font-semibold mb-1">
+              <Mail className="w-3.5 h-3.5 text-cyan-400" />
+              Threat email alerts
+            </div>
+            <p className="text-slate-400">
+              {system.alert_email_enabled
+                ? 'Each new threat emails every active member of this organization.'
+                : 'Threat emails are turned off (ALERT_EMAIL_ENABLED=false).'}
+              {' '}Repeat hits on the same open incident stay on that alert and do not send another email.
+            </p>
+            <p className="text-slate-500 mt-1">
+              {system.alert_email_smtp_configured
+                ? `Mail server is configured. Messages are sent from ${system.alert_email_from}.`
+                : 'SMTP_HOST is not set, so alerts are recorded in the console but email is not delivered yet.'}
+            </p>
+          </div>
         </div>
       )}
 
