@@ -1,6 +1,6 @@
 # SentinelGW — API Security Gateway & Threat Monitoring Platform
 
-**SentinelGW** is a full-stack **API Security Gateway and Real-Time SOC Threat Monitoring Platform** built with **FastAPI** (Python) and **React + TypeScript + Tailwind CSS**. Every gateway enforcement stage, behavioral anomaly detector, and vulnerable demo endpoint is grounded in the **OWASP API Security Top 10 (2025 Edition)**.
+**SentinelGW** is a full-stack **API Security Gateway and Real-Time SOC Threat Monitoring Platform** built with **FastAPI** (Python) and **React + TypeScript + Tailwind CSS**. Every gateway enforcement stage, behavioral anomaly detector, and vulnerable demo endpoint is grounded in the **OWASP API Security Top 10**.
 
 ---
 
@@ -9,10 +9,10 @@
 1. **10-Stage Reverse Proxy Security Pipeline (**`/gw/{path:path}`**)**
    - **Stage 1 — Context & Correlation**: Assigns `X-Request-ID` UUID, client IP extraction, and high-precision latency timer.
    - **Stage 2 — Blocklist Quarantine**: Instant `403` rejection for blocked IPs, users, or API keys.
-   - **Stage 3 — Route Matching & Shadow API Discovery (**`API9:2025`**)**: Matches against the registered route inventory and flags undocumented/legacy endpoints.
-   - **Stage 4 — 8-Step Cryptographic JWT & API Key Validator (**`API2:2025`**)**: Enforces `alg` whitelist (blocks `alg:none`), HMAC signature verification, `exp`, `nbf`, `iat` (+30s skew limit), `iss`, `aud`, and `jti` revocation check.
-   - **Stage 5 — Object & Function Level Authorization (**`API1:2025` **BOLA &** `API5:2025` **BFLA)**: Enforces role/scope RBAC and verifies JWT owner claims against path, query, and body object IDs (with learned-owner cache + enumeration caps).
-   - **Stage 6 — Hybrid Rate Limiter (**`API4:2025` **&** `API6:2025`**)**: Redis **fixed-window counter** for sustained RPM plus a Redis **token bucket** for burst control, with per-principal sensitive-flow caps, `X-RateLimit-`*, and `Retry-After` headers.
+   - **Stage 3 — Route Matching & Shadow API Discovery (**`API9`**)**: Matches against the registered route inventory and flags undocumented/legacy endpoints.
+   - **Stage 4 — 8-Step Cryptographic JWT & API Key Validator (**`API2`**)**: Enforces `alg` whitelist (blocks `alg:none`), HMAC signature verification, `exp`, `nbf`, `iat` (+30s skew limit), `iss`, `aud`, and `jti` revocation check.
+   - **Stage 5 — Object & Function Level Authorization (**`API1` **BOLA &** `API5` **BFLA)**: Enforces role/scope RBAC and verifies JWT owner claims against path, query, and body object IDs (with learned-owner cache + enumeration caps).
+   - **Stage 6 — Hybrid Rate Limiter (**`API4` **&** `API6`**)**: Redis **fixed-window counter** for sustained RPM plus a Redis **token bucket** for burst control, with per-principal sensitive-flow caps, `X-RateLimit-`*, and `Retry-After` headers.
    - **Stage 7 — Deep Payload & Query Inspector (**`API3`**,** `API4`**,** `API7`**,** `API8`**)**: JSON Schema validation, nested mass-assignment blocking, DNS-resolved SSRF (incl. decimal/IPv4-mapped IPs), normalized SQLi/XSS/traversal signatures, and policy-driven size/pagination caps.
    - **Stage 8 — Async Upstream Forwarding**: Proxies via a pooled HTTPX client with per-upstream circuit breaker and private-IP redirect pinning.
    - **Stage 9 — Response Hardening, PII Redaction & Unsafe Consumption (**`API3`**,** `API8`**,** `API10`**)**: Strips sensitive fields and pattern-matched SSN/PAN values, sanitizes all 5xx bodies, and strips/blocks third-party webhook URLs targeting private/metadata hosts.
@@ -83,7 +83,7 @@ Local development without Docker still uses SQLite. Set `REDIS_URL` and a Postgr
   - Configure per-route rate limits and token bucket bursts (`/rate-limits`) and test burst behavior.
   - Validate tokens with the 8-step JWT Token Tester (`/auth-settings`) and manage consumer API keys.
 - **Compliance Auditor**:
-  - Audit OWASP API Security Top 10 (2025) coverage in **OWASP Top 10** (`/owasp`).
+  - Audit OWASP API Security Top 10 coverage in **OWASP Top 10** (`/owasp`).
   - Review `p50`/`p95`/`p99` gateway latency percentiles and client rate anomalies in **Analytics** (`/analytics`).
   - Export CSV traffic/alert logs and printable summary reports in **Reports** (`/reports`).
 
@@ -91,6 +91,17 @@ Local development without Docker still uses SQLite. Set `REDIS_URL` and a Postgr
 
 ## Documentation
 
-- **[Product Overview](docs/PRODUCT_OVERVIEW.md)**: Why SentinelGW is needed, full feature list, OWASP mapping, tool comparison, and a basic how-to guide.
-- **[Project Proposal & Implementation Plan](docs/PROJECT_PROPOSAL_AND_IMPLEMENTATION_PLAN.md)**: Planning-phase overview for project managers covering objectives, scope, architecture, features, delivery phases, risks, acceptance criteria, and success measures.
-- **[Role-Based User & Operational Guide](docs/ROLE_BASED_USER_GUIDE.md)**: Complete walkthroughs for `Admin`, `SOC Analyst`, `API Developer`, `Compliance Viewer`, and `API Consumer` roles, plus a 5-minute Judge Demo script.
+Hackathon delivery set:
+
+- **[Research](docs/RESEARCH.md)**: Existing Indian and global API products, the business processes they follow, and the roles, rules, and exception cases that came out of that research.
+- **[Application documentation](docs/APPLICATION.md)**: Requirements, permissions, business rules, exception handling, and how to operate the console. Includes the map to the twelve common expectations.
+- **[Developer guide](docs/DEVELOPER_GUIDE.md)**: Tech stack, architecture, environment variables, tests, third-party integrations, and Docker deployment.
+- **[Lessons learned](docs/LESSONS_LEARNED.md)**: Assumptions, limitations, deliberate exclusions, and how AI output was checked.
+- **[AI review report](docs/AI_REVIEW_REPORT.md)**: Review of the delivery against the code and the test run.
+
+Supporting documents already in the repo:
+
+- **[Product Overview](docs/PRODUCT_OVERVIEW.md)**: Feature list, OWASP mapping, tool comparison, and a basic how-to.
+- **[Project Proposal & Implementation Plan](docs/PROJECT_PROPOSAL_AND_IMPLEMENTATION_PLAN.md)**: Original planning document. The application documentation describes what was built.
+- **[Role-Based User & Operational Guide](docs/ROLE_BASED_USER_GUIDE.md)**: Click-by-click playbooks. Prefer the simulator screen for the current attack list.
+- **[Codebase Guide](docs/CODEBASE_GUIDE.md)**: File-by-file map of the repository.

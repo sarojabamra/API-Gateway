@@ -102,7 +102,7 @@ def test_end_to_end_gateway_and_control_plane():
         )
         assert blocked.status_code == 403
 
-        # Projects are visible only to members of the same organization
+        # Customer projects stay inside one organization. VulnShop is shared.
         inventory = client.get("/api/v1/inventory", headers=headers)
         assert inventory.status_code == 200
         demo_projects = inventory.json()["upstreams"]
@@ -119,10 +119,11 @@ def test_end_to_end_gateway_and_control_plane():
         other_headers = {"Authorization": f"Bearer {create_res.json()['access_token']}"}
         other_org = client.get("/api/v1/inventory", headers=other_headers)
         assert other_org.status_code == 200
-        assert other_org.json()["upstreams"] == []
-        assert other_org.json()["registered_routes"] == []
-        assert client.get(f"/api/v1/overview?upstream_id={vulnshop_id}", headers=other_headers).status_code == 404
-        assert client.get(f"/api/v1/alerts?upstream_id={vulnshop_id}", headers=other_headers).status_code == 404
+        assert [project["id"] for project in other_org.json()["upstreams"]] == [vulnshop_id]
+        assert other_org.json()["registered_routes"]
+        assert all(route["upstream_id"] == vulnshop_id for route in other_org.json()["registered_routes"])
+        assert client.get(f"/api/v1/overview?upstream_id={vulnshop_id}", headers=other_headers).status_code == 200
+        assert client.get(f"/api/v1/alerts?upstream_id={vulnshop_id}", headers=other_headers).status_code == 200
 
         created_project = client.post(
             "/api/v1/inventory/upstreams",

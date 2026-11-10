@@ -112,23 +112,29 @@ async def run_rate_limit_burst_test(
     clean_path = payload.path.lstrip("/")
     upstream = require_visible_project(session, user, payload.upstream_id)
     gateway_path = f"/gw/{upstream.slug}/{clean_path}"
-    jwt_token = mint_demo_jwt(
-        sub=infer_simulator_subject(session, payload.upstream_id, path=clean_path),
-        email="burst-tester@sentinel.local",
-        role="user",
-        session=session,
-        upstream_id=payload.upstream_id,
-    )["token"]
+    auth_token = (payload.auth_token or "").strip()
+    api_key = (payload.api_key or "").strip()
+    if not auth_token and not api_key:
+        auth_token = mint_demo_jwt(
+            sub=infer_simulator_subject(session, payload.upstream_id, path=clean_path),
+            email="burst-tester@sentinel.local",
+            role="user",
+            session=session,
+            upstream_id=payload.upstream_id,
+        )["token"]
 
     results = []
     transport = httpx.ASGITransport(app=request.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://local-gateway") as client:
         for i in range(1, count + 1):
             headers = {
-                "Authorization": f"Bearer {jwt_token}",
                 "X-Simulated-Client-IP": payload.client_ip,
                 "User-Agent": "SentinelGW-BurstTester/1.0",
             }
+            if auth_token:
+                headers["Authorization"] = f"Bearer {auth_token}"
+            if api_key:
+                headers["X-API-Key"] = api_key
             if payload.method.upper() == "POST":
                 resp = await client.post(gateway_path, json={"code": "BURST50"}, headers=headers)
             else:

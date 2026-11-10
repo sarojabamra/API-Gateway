@@ -5,7 +5,12 @@ import httpx
 from sqlmodel import Session, select
 from app.db import engine
 from app.models import Route, Upstream
-from app.gateway.auth import mint_demo_jwt, resolve_simulator_user_jwt, simulator_object_id
+from app.gateway.auth import (
+    infer_simulator_subject,
+    mint_demo_jwt,
+    resolve_simulator_user_jwt,
+    simulator_object_id,
+)
 from app.gateway.pipeline import gateway_state
 from app.gateway.policy_engine import (
     BOLA_MODE_EQUALS_SUB,
@@ -29,8 +34,8 @@ SCENARIO_CATALOG: List[Dict[str, Any]] = [
         "owasp_id": "API1",
         "severity": "high",
         "target_endpoint": "Auto: route whose path contains a user id",
-        "description": "Authenticates as user id 2, reads that user's own id, then requests the same route for user ids 1, 3, 4, 5, 6, and 7. No request body is invented.",
-        "expected_when_on": "200 on user 2's own id, then 403 Forbidden for every other user id",
+        "description": "Uses the pasted project JWT to read that caller's own id, then the same route for six other user ids. With no pasted JWT, a sample user token (id 2) is used. No request body is invented.",
+        "expected_when_on": "200 on the caller's own id, then 403 Forbidden for every other user id",
         "expected_when_off": "Upstream response for the caller's own id and for each other user id",
     },
     {
@@ -39,7 +44,7 @@ SCENARIO_CATALOG: List[Dict[str, Any]] = [
         "owasp_id": "API1",
         "severity": "high",
         "target_endpoint": "Auto: GET resource route (booking, order, …), not a user-id route",
-        "description": "Reads resource id 2 as user 2, then requests resource ids 1, 3, 4, 5, and 6. The ID past the enumeration cap must be blocked. User-id routes are not used here.",
+        "description": "Uses the pasted project JWT to read that caller's own resource id, then five other resource ids. With no pasted JWT, a sample user token (id 2) is used. The ID past the enumeration cap must be blocked. User-id routes are not used here.",
         "expected_when_on": "200 on the caller's own object id, then 429 once ID enumeration is blocked",
         "expected_when_off": "Upstream response for the caller's own object and for every other object ID",
     },
@@ -146,6 +151,19 @@ SCENARIO_CATALOG: List[Dict[str, Any]] = [
 ]
 
 
+def _caller_id_walk(owner: str, total: int, kind: str) -> List[Tuple[str, str]]:
+    """Own id first, then other numeric ids, skipping the caller so the list stays the same length."""
+    owner_id = str(owner or "2")
+    ids = [owner_id]
+    n = 1
+    while len(ids) < total:
+        candidate = str(n)
+        if candidate != owner_id:
+            ids.append(candidate)
+        n += 1
+    return [(ids[0], f"own {kind}")] + [(item, f"other {kind}") for item in ids[1:]]
+
+
 async def execute_attack_scenario(
     scenario_id: str,
     asgi_app: Any,
@@ -153,6 +171,7 @@ async def execute_attack_scenario(
     auth_token: Optional[str] = None,
     route_id: Optional[int] = None,
     route_overrides: Optional[Dict[str, int]] = None,
+    api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Executes a scripted OWASP attack scenario (or 'all') through /gw/*
@@ -160,13 +179,21 @@ async def execute_attack_scenario(
 
     ``route_id`` / ``route_overrides`` let the operator manually pick inventory
     routes instead of relying solely on auto-targeting.
+    ``api_key`` is sent as X-API-Key on simulated requests when provided.
     """
+    consumer_api_key = (api_key or "").strip() or None
     if scenario_id == "all":
         combined_steps = []
         project_name = f"Project {upstream_id}"
         for sc in SCENARIO_CATALOG:
             res = await execute_attack_scenario(
-                sc["id"], asgi_app, upstream_id, auth_token, route_id=None, route_overrides=None
+                sc["id"],
+                asgi_app,
+                upstream_id,
+                auth_token,
+                route_id=None,
+                route_overrides=None,
+                api_key=consumer_api_key,
             )
             combined_steps.extend(res["steps"])
             project_name = res.get("project_name") or project_name
@@ -186,10 +213,22 @@ async def execute_attack_scenario(
     # Legacy alias: sqli_shadow -> run both new scenarios
     if scenario_id == "sqli_shadow":
         a = await execute_attack_scenario(
-            "sqli_inject", asgi_app, upstream_id, auth_token, route_id, route_overrides
+            "sqli_inject",
+            asgi_app,
+            upstream_id,
+            auth_token,
+            route_id,
+            route_overrides,
+            api_key=consumer_api_key,
         )
         b = await execute_attack_scenario(
-            "shadow_scan", asgi_app, upstream_id, auth_token, None, None
+            "shadow_scan",
+            asgi_app,
+            upstream_id,
+            auth_token,
+            None,
+            None,
+            api_key=consumer_api_key,
         )
         steps = a["steps"] + b["steps"]
         blocked = sum(1 for s in steps if s.get("blocked_by_gateway"))
@@ -214,16 +253,29 @@ async def execute_attack_scenario(
                 Route.registered == True,
             )
         ).all()
-        resolved = resolve_simulator_user_jwt(auth_token, session, upstream_id)
-        subject = resolved["subject"]
-        user_jwt = resolved["token"]
-        user_two_jwt = mint_demo_jwt(
-            sub="2",
-            email="user2@sentinel.local",
-            role="user",
-            session=session,
-            upstream_id=upstream_id,
-        )["token"]
+        raw_auth = (auth_token or "").strip()
+        if raw_auth:
+            resolved = resolve_simulator_user_jwt(raw_auth, session, upstream_id)
+            subject = resolved["subject"]
+            user_jwt = resolved["token"]
+        elif consumer_api_key:
+            # API-key-only projects: default steps authenticate with X-API-Key, not a minted JWT.
+            subject = infer_simulator_subject(session, upstream_id)
+            user_jwt = None
+        else:
+            resolved = resolve_simulator_user_jwt(None, session, upstream_id)
+            subject = resolved["subject"]
+            user_jwt = resolved["token"]
+        # Sample caller for scripted walks. Skipped when the operator pasted a JWT.
+        sample_user_jwt = None
+        if not raw_auth:
+            sample_user_jwt = mint_demo_jwt(
+                sub="2",
+                email="user2@sentinel.local",
+                role="user",
+                session=session,
+                upstream_id=upstream_id,
+            )["token"]
         alg_none_jwt = mint_demo_jwt(
             sub=subject, preset="alg_none", session=session, upstream_id=upstream_id
         )["token"]
@@ -232,6 +284,10 @@ async def execute_attack_scenario(
         )["token"]
 
     own_id = simulator_object_id(subject)
+    # Pasted JWT is the caller on every scenario, including the object-id walks.
+    # The sample user (sub=2) is only for runs with an empty token field.
+    bola_token = user_jwt if raw_auth else sample_user_jwt
+    bola_caller_id = own_id if raw_auth else "2"
     overrides = resolve_route_overrides(scenario_id, route_id, route_overrides)
     plan = plan_scenario_targets(scenario_id, routes, overrides=overrides)
 
@@ -243,14 +299,19 @@ async def execute_attack_scenario(
 
     def sim_headers(
         attacker_ip: str,
-        token: str = user_jwt,
+        token: Optional[str] = user_jwt,
         user_agent: str = "SentinelGW-AttackSimulator/1.0",
+        include_api_key: bool = True,
     ) -> Dict[str, str]:
-        return {
-            "Authorization": f"Bearer {token}",
+        headers: Dict[str, str] = {
             "X-Simulated-Client-IP": attacker_ip,
             "User-Agent": user_agent,
         }
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if include_api_key and consumer_api_key:
+            headers["X-API-Key"] = consumer_api_key
+        return headers
 
     def _path_params(pattern: str) -> List[str]:
         return re.findall(r"\{([^}]+)\}", pattern or "")
@@ -338,28 +399,20 @@ async def execute_attack_scenario(
             attacker_ip = f"{ip_prefix}.2"
             bola_method = bola_user_route.method.upper() if bola_user_route else "GET"
             # Own id first, so the run shows one allowed request, then the other user ids.
-            for target_user_id, kind in (
-                ("2", "own user id"),
-                ("1", "other user id"),
-                ("3", "other user id"),
-                ("4", "other user id"),
-                ("5", "other user id"),
-                ("6", "other user id"),
-                ("7", "other user id"),
-            ):
+            for target_user_id, kind in _caller_id_walk(bola_caller_id, 7, "user id"):
                 target_path = concrete(bola_user_route, target_user_id, f"/users/{target_user_id}")
                 resp = await client.request(
                     bola_method,
                     gateway_url(target_path),
                     headers=sim_headers(
                         attacker_ip,
-                        token=user_two_jwt,
+                        token=bola_token,
                         user_agent="SentinelGW-AttackSimulator/1.0",
                     ),
                 )
                 steps.append(
                     _format_step(
-                        f"{bola_method} {gateway_url(target_path)} [caller=user 2, {kind}={target_user_id} | {plan.reason('user_route')}]",
+                        f"{bola_method} {gateway_url(target_path)} [caller={bola_caller_id}, {kind}={target_user_id} | {plan.reason('user_route')}]",
                         "API1",
                         resp,
                     )
@@ -376,17 +429,10 @@ async def execute_attack_scenario(
                 object_params[0] if object_params else "id",
             )
             # Own object first. The cap is 5 distinct IDs, so the sixth ID must be blocked.
-            for object_id, kind in (
-                ("2", "own object id"),
-                ("1", "other object id"),
-                ("3", "other object id"),
-                ("4", "other object id"),
-                ("5", "other object id"),
-                ("6", "other object id"),
-            ):
+            for object_id, kind in _caller_id_walk(bola_caller_id, 6, "object id"):
                 target_path = concrete(
                     bola_object_route,
-                    "2",
+                    bola_caller_id,
                     f"/orders/{object_id}",
                     resource_id=object_id,
                 )
@@ -395,13 +441,13 @@ async def execute_attack_scenario(
                     gateway_url(target_path),
                     headers=sim_headers(
                         attacker_ip,
-                        token=user_two_jwt,
+                        token=bola_token,
                         user_agent="SentinelGW-AttackSimulator/1.0",
                     ),
                 )
                 steps.append(
                     _format_step(
-                        f"{bola_method} {gateway_url(target_path)} [caller=user 2, {kind}={object_id} | {plan.reason('object_route')}]",
+                        f"{bola_method} {gateway_url(target_path)} [caller={bola_caller_id}, {kind}={object_id} | {plan.reason('object_route')}]",
                         "API1",
                         resp,
                     )

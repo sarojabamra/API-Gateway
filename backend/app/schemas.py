@@ -122,12 +122,15 @@ class RateLimitBurstTestRequest(BaseModel):
     method: str = "GET"
     request_count: int = 20
     client_ip: str = "198.51.100.77"
+    auth_token: Optional[str] = None
+    api_key: Optional[str] = None
 
 
 class SimulatorRunRequest(BaseModel):
     scenario_id: str  # bola_cross_user, bola_enum, brute_force, jwt_tamper, data_exposure, rate_flood, bfla_admin, ssrf_metadata, sqli_shadow, all
     upstream_id: int = 1
     auth_token: Optional[str] = None
+    api_key: Optional[str] = None
     # Manual route targeting (optional). route_id maps to the scenario's primary role;
     # route_overrides maps role name → route id (e.g. {"read": 12, "write": 15}).
     route_id: Optional[int] = None

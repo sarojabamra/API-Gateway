@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { clearAllProjectCredentials } from '../lib/projectCredentials';
 import { AlertItem, TrafficLogItem, UserProfile, UserRole } from '../types/api';
 
 interface ToastNotification {
@@ -94,6 +95,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     localStorage.removeItem('sentinel_project_id');
     localStorage.removeItem('sentinel_project_name');
     localStorage.removeItem('sentinel_project_slug');
+    clearAllProjectCredentials();
     set({
       token: null,
       user: null,

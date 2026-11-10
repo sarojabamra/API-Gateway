@@ -19,8 +19,10 @@ import {
 } from 'lucide-react';
 import { apiFetch, formatTimeIST } from '../lib/api';
 import { formatProjectLabel, isDemoProject } from '../lib/projects';
+import { buildGatewayAuthHeaders } from '../lib/projectCredentials';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { MethodBadge, OwaspBadge } from '../components/shared/Badges';
+import { ProjectTestCredentials } from '../components/shared/ProjectTestCredentials';
 
 const SAMPLE_OPENAPI_SPEC = `openapi: 3.0.3
 info:
@@ -128,26 +130,49 @@ export const InventoryPage: React.FC = () => {
 
       const res = await fetch(gwUrl, {
         method: route.method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...buildGatewayAuthHeaders(route.upstream_id || selectedProjectId),
+        },
       });
+      const gatewayDecision = res.headers.get('X-Gateway-Decision') || '';
       let detail = '';
-      if (!res.ok) {
-        const raw = await res.text();
+      const raw = await res.text();
+      if (raw) {
         try {
           const parsed = JSON.parse(raw);
-          detail = parsed.message || parsed.detail || parsed.error || raw;
+          detail = parsed.message || parsed.detail || parsed.reason || parsed.error || raw;
         } catch {
           detail = raw;
         }
       }
       await fetchInventory();
-      addToast({
-        title: res.ok
-          ? `Request Recorded (+1) -> HTTP ${res.status}`
-          : `Test call returned HTTP ${res.status}`,
-        message: detail
+      const gatewayAllowed = gatewayDecision === 'allowed' || gatewayDecision === 'monitored';
+      let title = res.ok
+        ? `Request Recorded (+1) → HTTP ${res.status}`
+        : `Test call returned HTTP ${res.status}`;
+      let message = detail
+        ? `${route.method} ${gwUrl}. ${detail}`
+        : `Called ${route.method} ${gwUrl}.`;
+      if (!res.ok && gatewayAllowed) {
+        title = `Gateway allowed, upstream returned HTTP ${res.status}`;
+        const needsJwtHint =
+          res.status === 401 ||
+          res.status === 403 ||
+          /jwt|token|unauthor|auth/i.test(detail || '');
+        message = detail
           ? `${route.method} ${gwUrl}. ${detail}`
-          : `Called ${route.method} ${gwUrl}. Request count is now ${(route.hit_count || 0) + 1}.`,
+          : `${route.method} ${gwUrl}. The gateway accepted the request, but the backend returned an error.`;
+        if (needsJwtHint) {
+          message +=
+            ' The gateway accepted your API key, but this project still expects a JWT for the backend — add it under Test credentials.';
+        }
+      } else if (!res.ok && gatewayDecision === 'blocked') {
+        title = `Gateway blocked the call (HTTP ${res.status})`;
+      }
+      addToast({
+        title,
+        message,
         severity: res.ok ? 'info' : 'high',
       });
     } catch (err: any) {
@@ -369,6 +394,8 @@ export const InventoryPage: React.FC = () => {
           Refresh
         </button>
       </div>
+
+      <ProjectTestCredentials compact />
 
       {/* Connect a New Backend Project */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 space-y-3">

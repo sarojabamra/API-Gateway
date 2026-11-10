@@ -4,12 +4,12 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.models import Alert, Policy, RequestLog, to_ist_iso
 
-router = APIRouter(prefix="/owasp", tags=["OWASP API Top 10 (2025) Coverage"])
+router = APIRouter(prefix="/owasp", tags=["OWASP API Top 10 Coverage"])
 
-OWASP_TOP_10_2025: List[Dict[str, Any]] = [
+OWASP_TOP_10: List[Dict[str, Any]] = [
     {
         "owasp_id": "API1",
-        "code": "API1:2025",
+        "code": "API1",
         "title": "Broken Object Level Authorization (BOLA)",
         "risk_summary": "Attackers substitute object IDs in URL paths (/users/{id}, /orders/{id}) to access other users' records.",
         "gateway_mitigation": "Compares configurable owner claims to path/query/body object IDs, learns owners from successful GETs, and enforces distinct-ID enumeration caps.",
@@ -19,7 +19,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API2",
-        "code": "API2:2025",
+        "code": "API2",
         "title": "Broken Authentication",
         "risk_summary": "Weak JWT verification (alg=none, unverified signatures, expired/revoked tokens) and credential stuffing/brute force on login.",
         "gateway_mitigation": "8-step cryptographic JWT checklist (alg pinning, kid registry, exp/iss/aud, JTI revocation list) + login brute-force & credential stuffing detection.",
@@ -29,7 +29,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API3",
-        "code": "API3:2025",
+        "code": "API3",
         "title": "Broken Object Property Level Authorization",
         "risk_summary": "Excessive data exposure in API responses (leaking password_hash, SSN, credit_card) and Mass Assignment of privileged fields.",
         "gateway_mitigation": "Recursive mass-assignment blocking, OpenAPI request schema validation, response field redaction, and SSN/PAN pattern masking.",
@@ -39,7 +39,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API4",
-        "code": "API4:2025",
+        "code": "API4",
         "title": "Unrestricted Resource Consumption",
         "risk_summary": "Missing rate limits, burst controls, payload size limits, or unbounded pagination (?limit=50000).",
         "gateway_mitigation": "Hybrid Sliding Window Counter + Token Bucket rate limiter, 64KB max payload enforcement, and `?limit=100` query parameter cap.",
@@ -49,7 +49,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API5",
-        "code": "API5:2025",
+        "code": "API5",
         "title": "Broken Function Level Authorization (BFLA)",
         "risk_summary": "Standard non-admin users invoking administrative endpoints (/admin/users) where upstream forgot RBAC checks.",
         "gateway_mitigation": "Declarative role/scope-to-route policy enforcement rejecting non-admin tokens with 403 Forbidden and flagging privilege probes.",
@@ -59,7 +59,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API6",
-        "code": "API6:2025",
+        "code": "API6",
         "title": "Unrestricted Access to Sensitive Business Flows",
         "risk_summary": "Automated bots scalping inventory, exhausting promo coupon pools (/coupons/redeem), or spamming account creation.",
         "gateway_mitigation": "Dedicated sensitive-flow strict velocity thresholds, token bucket burst limits, and rolling Z-score client anomaly detection.",
@@ -69,7 +69,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API7",
-        "code": "API7:2025",
+        "code": "API7",
         "title": "Server-Side Request Forgery (SSRF)",
         "risk_summary": "API fetches attacker-controlled URLs (?url=) targeting cloud metadata (169.254.169.254), localhost, or internal VPC services.",
         "gateway_mitigation": "DNS-resolved SSRF checks (decimal/hex/IPv4-mapped normalization), nested JSON URL walking, and private-IP redirect pinning on egress.",
@@ -79,7 +79,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API8",
-        "code": "API8:2025",
+        "code": "API8",
         "title": "Security Misconfiguration & Injection",
         "risk_summary": "Missing security headers, leaky Server/X-Powered-By banners, verbose 500 stack traces, and SQLi/XSS/Path Traversal payloads.",
         "gateway_mitigation": "Injects HSTS/CSP/nosniff headers, strips server banners, sanitizes 500 errors, and inspects query/path/body for SQLi, XSS, and traversal.",
@@ -89,7 +89,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API9",
-        "code": "API9:2025",
+        "code": "API9",
         "title": "Improper Inventory Management (Shadow APIs)",
         "risk_summary": "Undocumented debug or legacy endpoints (/internal/debug, /.env) left exposed in production outside the OpenAPI spec.",
         "gateway_mitigation": "Strict route registry lookup flags and blocks any traffic to unregistered paths and populates the Shadow API Discovery queue.",
@@ -99,7 +99,7 @@ OWASP_TOP_10_2025: List[Dict[str, Any]] = [
     },
     {
         "owasp_id": "API10",
-        "code": "API10:2025",
+        "code": "API10",
         "title": "Unsafe Consumption of APIs",
         "risk_summary": "Backend blindly trusts third-party / supplier JSON containing private webhook URLs, redirects to metadata, or oversized nested payloads.",
         "gateway_mitigation": "Inspects upstream JSON responses for URL-like fields, DNS-resolves destinations, strips or blocks private/metadata targets, and pin-checks gateway-originated egress redirects.",
@@ -117,7 +117,7 @@ def get_owasp_coverage(session: Session = Depends(get_session)):
     alerts = session.exec(select(Alert).order_by(Alert.ts.desc())).all()
 
     cards = []
-    for item in OWASP_TOP_10_2025:
+    for item in OWASP_TOP_10:
         oid = item["owasp_id"]
         cat_policies = [p for p in policies if p.owasp_id == oid]
         enforcing_count = sum(1 for p in cat_policies if p.enabled and p.mode == "enforce")
@@ -155,7 +155,7 @@ def get_owasp_coverage(session: Session = Depends(get_session)):
     protected_categories = sum(1 for c in cards if c["protection_status"] in ("enforcing", "monitoring"))
     in_scope_total = sum(1 for c in cards if c["in_scope"])
     return {
-        "edition": "OWASP API Security Top 10 (2025 Edition)",
+        "edition": "OWASP API Security Top 10",
         "protected_in_scope_count": protected_categories,
         "total_in_scope_count": in_scope_total,
         "posture_score": round((protected_categories / float(max(1, in_scope_total))) * 100),

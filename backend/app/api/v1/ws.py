@@ -8,6 +8,7 @@ from redis.exceptions import RedisError
 from sqlmodel import Session
 
 from app.api.v1.deps import authenticate_access_token
+from app.api.v1.org_access import is_shared_demo
 from app.config import settings
 from app.db import engine
 from app.gateway.redis_client import redis_handle
@@ -57,7 +58,10 @@ class WebSocketConnectionManager:
             return False
         with Session(engine) as session:
             project = session.get(Upstream, upstream_id)
-            return bool(project and project.organization_id == organization_id)
+            return bool(
+                project
+                and (project.organization_id == organization_id or is_shared_demo(project))
+            )
 
     async def broadcast(self, message: Dict[str, Any]) -> None:
         client = redis_handle.get()

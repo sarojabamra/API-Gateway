@@ -2,11 +2,11 @@
 ## API Security Gateway and Threat Monitoring Platform
 
 **Document type:** Project proposal and implementation plan  
-**Project status:** Planning phase  
+**Project status:** Original plan. The working demo is described in the [application documentation](APPLICATION.md).  
 **Primary audience:** Project manager, technical lead, security stakeholders, and delivery team  
 **Proposed technology:** React, TypeScript, Tailwind CSS, FastAPI, Python, SQLModel, SQLite, and WebSockets
 
-> This document intentionally describes SentinelGW as a proposed system. It defines what the project is expected to deliver and how the team plans to implement it; it does not represent a claim that the system is already production-ready.
+> This file is the planning document. It describes what SentinelGW was expected to deliver. For the system as built — requirements, roles, how to run it, and known limits — read [Research](RESEARCH.md), [Application documentation](APPLICATION.md), [Developer guide](DEVELOPER_GUIDE.md), [Lessons learned](LESSONS_LEARNED.md), and the [AI review report](AI_REVIEW_REPORT.md). It is not a claim that the system is production-ready.
 
 ---
 

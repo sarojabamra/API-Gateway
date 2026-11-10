@@ -27,6 +27,9 @@ pnpm-debug.log*
 !.env.example
 /backend/sentinel_gateway.db
 
+# Documentation
+/docs/
+
 # OS files
 .DS_Store
 Thumbs.db

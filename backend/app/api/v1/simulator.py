@@ -116,6 +116,7 @@ async def run_attack_simulation(
             payload.auth_token,
             payload.route_id,
             payload.route_overrides,
+            payload.api_key,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

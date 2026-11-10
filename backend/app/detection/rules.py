@@ -189,7 +189,10 @@ class BehavioralTracker:
                 })
 
         # 5. BFLA Privilege Escalation Probe (API5 - High)
-        if log.owasp_id == "API5" or (path.startswith("/admin") and log.user_role != "admin"):
+        # Compare roles case-insensitively so JWT claims like "ADMIN" match gateway enforcement.
+        caller_role = (log.user_role or "").strip().lower()
+        non_admin_on_admin_path = path.startswith("/admin") and caller_role != "admin"
+        if log.owasp_id == "API5" or non_admin_on_admin_path:
             probes = self._count_event(
                 self.bfla_probes, scope_key, f"sgw:behav:bfla:{scope_key}", now, 300
             )
@@ -198,7 +201,10 @@ class BehavioralTracker:
                 "owasp_id": "API5",
                 "severity": "high",
                 "title": f"BFLA Privilege Escalation Probe on Admin Endpoint ({path})",
-                "description": f"Non-admin principal '{sub}' (role={log.user_role or 'user'}) attempted to invoke administrative function '{log.method} {path}' ({probes} attempts).",
+                "description": (
+                    f"Non-admin principal '{sub}' (role={log.user_role or 'none'}) "
+                    f"attempted to invoke administrative function '{log.method} {path}' ({probes} attempts)."
+                ),
             })
 
         # 6. SSRF Attempt (API7 - Critical)

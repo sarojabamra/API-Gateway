@@ -2,7 +2,7 @@
 
 SentinelGW is an API security gateway and monitoring console. API clients call SentinelGW instead of calling your backend directly. SentinelGW checks each request, blocks or limits bad traffic, forwards clean requests to the backend, and shows what happened in a live dashboard.
 
-It is built around the OWASP API Security Top 10 (2025).
+It is built around the OWASP API Security Top 10.
 
 This document covers why the product is needed, what key terms mean, what the product includes, how it compares with common tools, and how to use it.
 
@@ -293,7 +293,7 @@ Each control can run in **monitor** (log only) or **enforce** (block). That lets
 
 ---
 
-## 5. OWASP API Security Top 10 (2025)
+## 5. OWASP API Security Top 10
 
 | ID | Meaning in practice | Example | What SentinelGW does |
 |---|---|---|---|
@@ -485,6 +485,6 @@ If the call goes to the backend port instead, SentinelGW will not see it and can
 
 ## 9. Bottom line
 
-SentinelGW inspects API traffic against the OWASP API Top 10 (2025), keeps a live inventory of what is being called, stops abuse a single service is weak at detecting — wrong-object access, unsafe fields, response leaks, injection, SSRF, unknown routes, and probing across services — and gives one place to investigate and cut off the caller, without waiting for every team to build the same protections the same way.
+SentinelGW inspects API traffic against the OWASP API Top 10, keeps a live inventory of what is being called, stops abuse a single service is weak at detecting — wrong-object access, unsafe fields, response leaks, injection, SSRF, unknown routes, and probing across services — and gives one place to investigate and cut off the caller, without waiting for every team to build the same protections the same way.
 
 For role-by-role detail and a short demo script, see [Role-Based User Guide](ROLE_BASED_USER_GUIDE.md). For code layout, see [Codebase Guide](CODEBASE_GUIDE.md).

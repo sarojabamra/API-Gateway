@@ -556,13 +556,15 @@ def check_bola_ownership(
     """
     if not route.bola_check_enabled:
         return True, None
-    # Admins are authorized via BFLA (required_role), not object-id equality.
-    if (user_role or "").lower() == "admin":
-        return True, None
+    # Admin-only functions are gated by BFLA, not by object ownership.
     if (getattr(route, "required_role", None) or "").lower() == "admin":
         return True, None
     # Public / unauthenticated pages (e.g. public user profile) skip ownership.
     if getattr(route, "auth_required", True) is False:
+        return True, None
+    mode = resolve_bola_mode(route)
+    # A role does not grant another user's id. equals_sub still compares sub to {user_id}.
+    if (user_role or "").lower() == "admin" and mode != BOLA_MODE_EQUALS_SUB:
         return True, None
 
     obj_ids = _extract_object_ids(route, path_params, query_params, body_json)
@@ -573,7 +575,6 @@ def check_bola_ownership(
     claims = decoded_jwt or {}
     owner_claim_val = str(claims.get(claim_name) or user_sub or "")
     normalized_claim = _normalize_subject(owner_claim_val)
-    mode = resolve_bola_mode(route)
 
     for obj_id in obj_ids:
         normalized_obj = _normalize_subject(obj_id)

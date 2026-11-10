@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Zap, Gauge, Save } from 'lucide-react';
 import { apiFetch } from '../lib/api';
+import { readProjectApiKey, readProjectJwt } from '../lib/projectCredentials';
 import { useGatewayStore } from '../store/useGatewayStore';
 import { MethodBadge, OwaspBadge } from '../components/shared/Badges';
+import { ProjectTestCredentials } from '../components/shared/ProjectTestCredentials';
 
 export const RateLimitsPage: React.FC = () => {
   const { addToast, canMutate, selectedProjectId, selectedProjectName } = useGatewayStore();
@@ -60,6 +62,8 @@ export const RateLimitsPage: React.FC = () => {
     e.preventDefault();
     setBurstRunning(true);
     try {
+      const authToken = readProjectJwt(selectedProjectId).trim();
+      const apiKey = readProjectApiKey(selectedProjectId).trim();
       const res = await apiFetch('/ratelimits/test-burst', {
         method: 'POST',
         body: JSON.stringify({
@@ -68,6 +72,8 @@ export const RateLimitsPage: React.FC = () => {
           method: burstMethod,
           request_count: burstCount,
           client_ip: '198.51.100.77',
+          auth_token: authToken || undefined,
+          api_key: apiKey || undefined,
         }),
       });
       setBurstResult(res);
@@ -101,6 +107,8 @@ export const RateLimitsPage: React.FC = () => {
           <span>Counter Store: {data?.backend_engine || 'in-memory'}</span>
         </div>
       </div>
+
+      <ProjectTestCredentials compact />
 
       {/* Interactive Burst Simulator Box + Live Usage Meters */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">

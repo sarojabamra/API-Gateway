@@ -27,6 +27,7 @@ from app.gateway.inspector import (
     strip_unsafe_urls_from_json,
 )
 from app.gateway.policy_engine import (
+    BOLA_MODE_LEARNED_OWNER,
     check_bola_ownership,
     check_policy_mode,
     find_matching_route,
@@ -34,6 +35,7 @@ from app.gateway.policy_engine import (
     get_policy_config,
     is_public_auth_path,
     remember_object_owner,
+    resolve_bola_mode,
     resolve_bola_owner_param,
     track_bola_enumeration,
 )
@@ -587,83 +589,105 @@ async def execute_gateway_pipeline(
 
         if should_validate_auth:
             pol_enabled, pol_mode, pol_id = check_policy_mode(session, "auth", "API2")
-            if api_key_header and not auth_header:
-                ok_key, key_obj, key_msg = verify_api_key(api_key_header, session)
-                if not ok_key:
-                    api_key_id = key_obj.id if key_obj else None
-                    if pol_enabled and pol_mode == "enforce":
-                        return await reject(
-                            401, "blocked", f"API Key Authentication Failed (OWASP API2): {key_msg}", "API2", 75, pol_id
-                        )
-                else:
+            # Accept either credential. Prefer a valid JWT when both are present (richer
+            # claims for BOLA/BFLA); fall back to X-API-Key when JWT is missing or invalid.
+            api_key_ok = False
+            api_key_msg = ""
+            key_obj = None
+            if api_key_header:
+                api_key_ok, key_obj, api_key_msg = verify_api_key(api_key_header, session)
+                if key_obj is not None:
                     api_key_id = key_obj.id
-                    user_sub = f"apikey:{key_obj.name}"
-                    user_role = key_obj.role
-            elif auth_header or auth_required:
-                if not auth_header:
-                    if pol_enabled and pol_mode == "enforce":
-                        return await reject(
-                            401, "blocked", "Missing Bearer JWT or X-API-Key on protected route (OWASP API2)", "API2", 60, pol_id
-                        )
-                else:
-                    expected_scope = None
-                    if matched_route and matched_route.required_scopes_json:
-                        try:
-                            scopes_list = json.loads(matched_route.required_scopes_json or "[]")
-                            if scopes_list:
-                                expected_scope = scopes_list[0]
-                        except Exception:
-                            expected_scope = None
-                    jwt_res = validate_jwt_checklist(
-                        auth_header,
-                        session,
-                        expected_role=matched_route.required_role if matched_route else None,
-                        expected_scope=expected_scope,
-                        jwt_config=get_upstream_jwt_config(session, upstream_id),
-                    )
-                    decoded_jwt = {"header": jwt_res.get("header"), "payload": jwt_res.get("payload"), "steps": jwt_res.get("steps")}
-                    payload_claims = jwt_res.get("payload") or {}
-                    user_sub = payload_claims.get("sub")
-                    user_role = payload_claims.get("role")
 
-                    if not jwt_res["valid"]:
-                        fail_code = jwt_res.get("failure_code", "jwt_invalid")
-                        score = 95 if fail_code in ("jwt_alg_none", "jwt_bad_signature", "jwt_algorithm_confusion") else 75
-                        # Brute-force / failed-auth lockout from policy config
-                        if is_auth_bootstrap_route or fail_code in ("jwt_bad_signature", "jwt_expired", "jwt_revoked"):
-                            auth_cfg = get_policy_config(session, "auth", "API2")
-                            max_fails = int(auth_cfg.get("max_login_failures", 5))
-                            fail_window = int(auth_cfg.get("login_failure_window_sec", 60))
-                            lock_key = f"login-fail:{client_ip}"
-                            locked, _, _ = rate_limiter.check_and_consume(
-                                key=lock_key,
-                                limit_rpm=max_fails,
-                                burst_capacity=max_fails,
-                                window_seconds=fail_window,
-                            )
-                            if not locked and pol_enabled and pol_mode == "enforce":
-                                return await reject(
-                                    429,
-                                    "rate_limited",
-                                    f"Login / auth failure lockout (OWASP API2): >{max_fails} failures in {fail_window}s from {client_ip}",
-                                    "API2",
-                                    80,
-                                    pol_id,
-                                )
-                        if pol_enabled and pol_mode == "enforce":
-                            return await reject(
-                                401,
-                                "blocked",
-                                f"JWT Validation Failed [{fail_code}] (OWASP API2): {jwt_res['reason']}",
-                                "API2",
-                                score,
-                                pol_id,
-                            )
-                        elif pol_enabled and pol_mode == "monitor":
-                            decision = "monitored"
-                            block_reason = f"[Monitor Mode] JWT Validation Failed [{fail_code}]: {jwt_res['reason']}"
-                            owasp_id = "API2"
-                            threat_score = max(threat_score, score)
+            jwt_ok = False
+            jwt_res = None
+            if has_bearer_header:
+                expected_scope = None
+                if matched_route and matched_route.required_scopes_json:
+                    try:
+                        scopes_list = json.loads(matched_route.required_scopes_json or "[]")
+                        if scopes_list:
+                            expected_scope = scopes_list[0]
+                    except Exception:
+                        expected_scope = None
+                jwt_res = validate_jwt_checklist(
+                    auth_header,
+                    session,
+                    expected_role=matched_route.required_role if matched_route else None,
+                    expected_scope=expected_scope,
+                    jwt_config=get_upstream_jwt_config(session, upstream_id),
+                )
+                decoded_jwt = {
+                    "header": jwt_res.get("header"),
+                    "payload": jwt_res.get("payload"),
+                    "steps": jwt_res.get("steps"),
+                }
+                jwt_ok = bool(jwt_res.get("valid"))
+
+            if jwt_ok and jwt_res is not None:
+                payload_claims = jwt_res.get("payload") or {}
+                user_sub = payload_claims.get("sub")
+                user_role = payload_claims.get("role")
+            elif api_key_ok and key_obj is not None:
+                user_sub = f"apikey:{key_obj.name}"
+                user_role = key_obj.role
+            elif has_bearer_header and jwt_res is not None and not jwt_ok and not api_key_ok:
+                fail_code = jwt_res.get("failure_code", "jwt_invalid")
+                score = 95 if fail_code in ("jwt_alg_none", "jwt_bad_signature", "jwt_algorithm_confusion") else 75
+                if is_auth_bootstrap_route or fail_code in ("jwt_bad_signature", "jwt_expired", "jwt_revoked"):
+                    auth_cfg = get_policy_config(session, "auth", "API2")
+                    max_fails = int(auth_cfg.get("max_login_failures", 5))
+                    fail_window = int(auth_cfg.get("login_failure_window_sec", 60))
+                    lock_key = f"login-fail:{client_ip}"
+                    locked, _, _ = rate_limiter.check_and_consume(
+                        key=lock_key,
+                        limit_rpm=max_fails,
+                        burst_capacity=max_fails,
+                        window_seconds=fail_window,
+                    )
+                    if not locked and pol_enabled and pol_mode == "enforce":
+                        return await reject(
+                            429,
+                            "rate_limited",
+                            f"Login / auth failure lockout (OWASP API2): >{max_fails} failures in {fail_window}s from {client_ip}",
+                            "API2",
+                            80,
+                            pol_id,
+                        )
+                if pol_enabled and pol_mode == "enforce":
+                    return await reject(
+                        401,
+                        "blocked",
+                        f"JWT Validation Failed [{fail_code}] (OWASP API2): {jwt_res['reason']}",
+                        "API2",
+                        score,
+                        pol_id,
+                    )
+                if pol_enabled and pol_mode == "monitor":
+                    decision = "monitored"
+                    block_reason = f"[Monitor Mode] JWT Validation Failed [{fail_code}]: {jwt_res['reason']}"
+                    owasp_id = "API2"
+                    threat_score = max(threat_score, score)
+            elif api_key_header and not api_key_ok:
+                if pol_enabled and pol_mode == "enforce":
+                    return await reject(
+                        401,
+                        "blocked",
+                        f"API Key Authentication Failed (OWASP API2): {api_key_msg}",
+                        "API2",
+                        75,
+                        pol_id,
+                    )
+            elif auth_required and not has_bearer_header and not api_key_header:
+                if pol_enabled and pol_mode == "enforce":
+                    return await reject(
+                        401,
+                        "blocked",
+                        "Missing Bearer JWT or X-API-Key on protected route (OWASP API2)",
+                        "API2",
+                        60,
+                        pol_id,
+                    )
 
         # Re-check blocklist now that user_sub / api_key_id are known
         if user_sub or api_key_id:
@@ -741,7 +765,13 @@ async def execute_gateway_pipeline(
                     owasp_id = "API1"
                     matched_policy_id = pol_id
                     threat_score = max(threat_score, 85)
-            elif matched_route.bola_check_enabled and path_params:
+            elif (
+                matched_route.bola_check_enabled
+                and path_params
+                and resolve_bola_mode(matched_route) == BOLA_MODE_LEARNED_OWNER
+            ):
+                # Enumeration is only the resource-id simulation. User-id routes
+                # (equals_sub) are the cross-user ownership check and stop at 403.
                 bola_cfg = get_policy_config(session, "bola", "API1")
                 max_ids = int(bola_cfg.get("max_distinct_ids_per_min", 5))
                 owner_param = resolve_bola_owner_param(matched_route, path_params)

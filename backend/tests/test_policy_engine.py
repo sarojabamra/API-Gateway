@@ -165,6 +165,34 @@ def test_bola_resolves_stale_userid_param_name():
     assert ok_own is True
 
 
+def test_admin_role_still_cannot_open_another_users_id():
+    route = Route(
+        upstream_id=2,
+        method="GET",
+        path_pattern="/parking/users/{user_id}/history",
+        bola_check_enabled=True,
+        bola_owner_claim="sub",
+        bola_owner_param="user_id",
+        bola_mode="equals_sub",
+        auth_required=True,
+        registered=True,
+    )
+    own, _ = check_bola_ownership(
+        route, {"user_id": "2"}, "2", "ADMIN", decoded_jwt={"sub": "2", "role": "ADMIN"}
+    )
+    assert own is True
+    for other_id in ("1", "3", "4"):
+        ok, err = check_bola_ownership(
+            route,
+            {"user_id": other_id},
+            "2",
+            "ADMIN",
+            decoded_jwt={"sub": "2", "role": "ADMIN"},
+        )
+        assert ok is False
+        assert other_id in (err or "")
+
+
 def test_bola_skips_admin_routes():
     route = Route(
         upstream_id=2,

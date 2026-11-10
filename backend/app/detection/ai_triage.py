@@ -5,52 +5,52 @@ from app.models import Alert, RequestLog
 
 OWASP_KNOWLEDGE_BASE: Dict[str, Dict[str, str]] = {
     "API1": {
-        "name": "API1:2025 - Broken Object Level Authorization (BOLA)",
+        "name": "API1 - Broken Object Level Authorization (BOLA)",
         "root_cause": "Upstream endpoint accepts object identifiers (e.g., /users/{id} or /orders/{id}) in the URL path without verifying that the authenticated principal owns the requested record.",
         "impact": "Horizontal privilege escalation and mass PII/financial record harvesting across all user accounts.",
     },
     "API2": {
-        "name": "API2:2025 - Broken Authentication",
+        "name": "API2 - Broken Authentication",
         "root_cause": "Credential stuffing, brute-force login velocity, or forged/tampered JWT tokens attempting to bypass identity verification (such as alg=none or modified claims).",
         "impact": "Full account takeover (ATO) and forged administrative identity impersonation.",
     },
     "API3": {
-        "name": "API3:2025 - Broken Object Property Level Authorization",
+        "name": "API3 - Broken Object Property Level Authorization",
         "root_cause": "Upstream API serializes full database models containing sensitive fields (password_hash, ssn, credit_card) or blindly binds client JSON properties (Mass Assignment of role/is_admin).",
         "impact": "Exposure of sensitive credentials/PII in API responses or unauthorized privilege elevation via mass assignment.",
     },
     "API4": {
-        "name": "API4:2025 - Unrestricted Resource Consumption",
+        "name": "API4 - Unrestricted Resource Consumption",
         "root_cause": "Lack of request rate bounds, burst throttling, payload size caps, or pagination limits (?limit=50000).",
         "impact": "Service degradation, Denial of Service (DoS), database CPU starvation, and cloud billing exhaustion.",
     },
     "API5": {
-        "name": "API5:2025 - Broken Function Level Authorization (BFLA)",
+        "name": "API5 - Broken Function Level Authorization (BFLA)",
         "root_cause": "Administrative endpoints (/admin/users) rely on security-by-obscurity instead of enforcing strict role/scope RBAC checks.",
         "impact": "Vertical privilege escalation allowing standard users to invoke privileged administrative operations.",
     },
     "API6": {
-        "name": "API6:2025 - Unrestricted Access to Sensitive Business Flows",
+        "name": "API6 - Unrestricted Access to Sensitive Business Flows",
         "root_cause": "High-value business workflows (/coupons/redeem, /orders, /auth/register) lack bot velocity protection and per-flow rate limiting.",
         "impact": "Automated promotional pool exhaustion, inventory scalping, and fraudulent financial transactions.",
     },
     "API7": {
-        "name": "API7:2025 - Server-Side Request Forgery (SSRF)",
+        "name": "API7 - Server-Side Request Forgery (SSRF)",
         "root_cause": "Backend fetches URL parameters (?url=) supplied by the client without restricting loopback, RFC1918 private networks, or cloud metadata endpoints (169.254.169.254).",
         "impact": "Exfiltration of cloud IAM instance credentials, internal service scanning, and lateral movement inside the VPC.",
     },
     "API8": {
-        "name": "API8:2025 - Security Misconfiguration & Injection",
+        "name": "API8 - Security Misconfiguration & Injection",
         "root_cause": "Unparameterized queries vulnerable to SQLi/XSS/Path Traversal combined with verbose server headers and stack traces.",
         "impact": "Arbitrary database extraction, remote command execution, or infrastructure fingerprinting.",
     },
     "API9": {
-        "name": "API9:2025 - Improper Inventory Management (Shadow APIs)",
+        "name": "API9 - Improper Inventory Management (Shadow APIs)",
         "root_cause": "Legacy, debug, or undocumented endpoints (/internal/debug, /.env) left exposed on the upstream service outside the official OpenAPI specification.",
         "impact": "Unmonitored access to environment variables, database credentials, and unpatched debug utilities.",
     },
     "API10": {
-        "name": "API10:2025 - Unsafe Consumption of APIs",
+        "name": "API10 - Unsafe Consumption of APIs",
         "root_cause": "Upstream or third-party payloads contain private/metadata webhook URLs, or the gateway follows redirects to restricted destinations without validation.",
         "impact": "SSRF-style credential theft via trusted supplier responses, lateral movement, and silent exfiltration through callback fields.",
     },
