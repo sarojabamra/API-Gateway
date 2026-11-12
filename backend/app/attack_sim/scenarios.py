@@ -749,18 +749,31 @@ def _format_step(label: str, owasp_id: str, resp: httpx.Response) -> Dict[str, A
 
     redacted_hdr = resp.headers.get("X-Gateway-Redacted-Fields")
     decision = resp.headers.get("X-Gateway-Decision", "upstream_response")
+    redacted = "REDACTED BY GATEWAY" in preview
+    stripped = "STRIPPED BY GATEWAY API10" in preview
     if redacted_hdr and resp.status_code == 200:
         decision = f"allowed (API3 redacted: {redacted_hdr})"
 
     protected = decision in ("blocked", "rate_limited")
-    if "REDACTED BY GATEWAY" in preview or "STRIPPED BY GATEWAY API10" in preview:
-        protected = True
+    if protected and decision == "rate_limited":
+        outcome = "rate_limited"
+    elif protected:
+        outcome = "blocked"
+    elif redacted:
+        outcome = "redacted"
+    elif stripped:
+        outcome = "stripped"
+    elif 200 <= resp.status_code < 300:
+        outcome = "allowed"
+    else:
+        outcome = "passed"
 
     return {
         "request": label,
         "owasp_id": owasp_id,
         "status_code": resp.status_code,
         "decision": decision,
+        "outcome": outcome,
         "blocked_by_gateway": protected,
         "request_id": resp.headers.get("X-Request-ID", "-"),
         "server_header": resp.headers.get("Server", "[Stripped by Gateway API8]"),

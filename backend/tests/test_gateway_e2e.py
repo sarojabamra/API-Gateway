@@ -256,6 +256,8 @@ def test_end_to_end_gateway_and_control_plane():
         assert redact_on.status_code == 200
         preview_on = redact_on.json()["steps"][0]["response_preview"]
         assert "REDACTED BY GATEWAY" in preview_on
+        assert redact_on.json()["steps"][0]["outcome"] == "redacted"
+        assert redact_on.json()["steps"][0]["blocked_by_gateway"] is False
         assert redact_on.json()["blocked_count"] >= 1  # mass assignment steps
 
         # API10 unsafe third-party URLs stripped when Gateway ON

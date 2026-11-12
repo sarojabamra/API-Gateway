@@ -15,6 +15,59 @@ import { useGatewayStore } from '../store/useGatewayStore';
 import { OwaspBadge, SeverityBadge } from '../components/shared/Badges';
 import { ProjectTestCredentials } from '../components/shared/ProjectTestCredentials';
 
+function stepOutcome(step: { outcome?: string; blocked_by_gateway?: boolean; status_code?: number; response_preview?: string }): string {
+  if (step.outcome) return step.outcome;
+  if (step.blocked_by_gateway) return step.status_code === 429 ? 'rate_limited' : 'blocked';
+  const preview = step.response_preview || '';
+  if (preview.includes('REDACTED BY GATEWAY')) return 'redacted';
+  if (preview.includes('STRIPPED BY GATEWAY API10')) return 'stripped';
+  if ((step.status_code || 0) >= 200 && (step.status_code || 0) < 300) return 'allowed';
+  return 'passed';
+}
+
+function outcomeTone(outcome: string): { card: string; tag: string; label: string } {
+  if (outcome === 'blocked') {
+    return {
+      card: 'bg-rose-950/25 border-rose-500/40',
+      tag: 'bg-rose-500/25 text-rose-300 border border-rose-500/40',
+      label: 'BLOCKED',
+    };
+  }
+  if (outcome === 'rate_limited') {
+    return {
+      card: 'bg-amber-950/25 border-amber-500/40',
+      tag: 'bg-amber-500/20 text-amber-300 border border-amber-500/40',
+      label: 'LIMITED',
+    };
+  }
+  if (outcome === 'redacted') {
+    return {
+      card: 'bg-sky-950/25 border-sky-500/40',
+      tag: 'bg-sky-500/20 text-sky-300 border border-sky-500/40',
+      label: 'REDACTED',
+    };
+  }
+  if (outcome === 'stripped') {
+    return {
+      card: 'bg-sky-950/25 border-sky-500/40',
+      tag: 'bg-sky-500/20 text-sky-300 border border-sky-500/40',
+      label: 'STRIPPED',
+    };
+  }
+  if (outcome === 'allowed') {
+    return {
+      card: 'bg-emerald-950/20 border-emerald-500/30',
+      tag: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40',
+      label: 'ALLOWED',
+    };
+  }
+  return {
+    card: 'bg-emerald-950/20 border-emerald-500/30',
+    tag: 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40',
+    label: 'PASSED',
+  };
+}
+
 export const AttackSimulatorPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const {
@@ -310,27 +363,17 @@ export const AttackSimulatorPage: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[420px] overflow-y-auto pr-1">
             {(lastResult.steps || []).map((step: any, idx: number) => {
-              const isBlocked = step.blocked_by_gateway;
-              const isSuccess = !isBlocked && step.status_code >= 200 && step.status_code < 300;
+              const outcome = stepOutcome(step);
+              const tone = outcomeTone(outcome);
               return (
                 <div
                   key={idx}
-                  className={`p-3.5 rounded-xl border text-xs font-mono ${
-                    isBlocked
-                      ? 'bg-rose-950/25 border-rose-500/40'
-                      : 'bg-emerald-950/20 border-emerald-500/30'
-                  }`}
+                  className={`p-3.5 rounded-xl border text-xs font-mono ${tone.card}`}
                 >
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <span className="font-bold text-white truncate">{step.request}</span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[11px] font-bold shrink-0 ${
-                        isBlocked
-                          ? 'bg-rose-500/25 text-rose-300 border border-rose-500/40'
-                          : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                      }`}
-                    >
-                      HTTP {step.status_code} ({isBlocked ? 'BLOCKED' : isSuccess ? 'SUCCESS' : 'PASSED'})
+                    <span className={`px-2 py-0.5 rounded text-[11px] font-bold shrink-0 ${tone.tag}`}>
+                      HTTP {step.status_code} ({tone.label})
                     </span>
                   </div>
                   <div className="text-[10px] text-slate-400 mb-1.5">
