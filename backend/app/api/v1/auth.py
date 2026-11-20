@@ -27,10 +27,13 @@ from app.api.v1.deps import (
 )
 from app.api.v1.org_access import require_visible_project
 from app.gateway.auth import (
+    describe_active_jwt_config,
+    extract_revocation_identity,
+    find_revoked_token,
     get_upstream_jwt_config,
     hash_api_key,
-    jwt_runtime_config,
     mint_demo_jwt,
+    project_can_mint_hs256,
     validate_jwt_checklist,
 )
 
@@ -168,16 +171,17 @@ def get_me(user: User = Depends(get_current_user), session: Session = Depends(ge
 
 
 @router.get("/jwt-config")
-def get_jwt_config(_user: User = Depends(get_current_user)):
-    return {
-        "allowed_algorithms": jwt_runtime_config.allowed_algorithms,
-        "issuer": jwt_runtime_config.issuer,
-        "audience": jwt_runtime_config.audience,
-        "leeway_seconds": jwt_runtime_config.leeway_seconds,
-        "require_jti": jwt_runtime_config.require_jti,
-        "reject_alg_none": jwt_runtime_config.reject_alg_none,
-        "trusted_kids": list(jwt_runtime_config.trusted_kids.keys()),
-    }
+def get_jwt_config(
+    upstream_id: Optional[int] = None,
+    session: Session = Depends(get_session),
+    user: User = Depends(get_current_user),
+):
+    """Pinned checks for the selected project. Falls back to the built-in gateway key only when that project has none."""
+    project_config = None
+    if upstream_id is not None:
+        upstream = require_visible_project(session, user, upstream_id)
+        project_config = get_upstream_jwt_config(session, upstream.id)
+    return describe_active_jwt_config(project_config)
 
 
 class UpstreamJWTConfigInput(BaseModel):
@@ -264,21 +268,40 @@ class JwtTestUnifiedInput(BaseModel):
     preset: Optional[str] = None
     expected_role: Optional[str] = None
     expected_scope: Optional[str] = None
+    upstream_id: Optional[int] = None
+
+
+def _project_jwt_config_for_request(session: Session, user: User, upstream_id: Optional[int]):
+    if upstream_id is None:
+        return None
+    upstream = require_visible_project(session, user, upstream_id)
+    return get_upstream_jwt_config(session, upstream.id)
 
 
 @router.post("/jwt-test")
 def test_or_mint_jwt(
     payload: JwtTestUnifiedInput,
     session: Session = Depends(get_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
+    jwt_config = _project_jwt_config_for_request(session, user, payload.upstream_id)
     if payload.preset:
         preset_aliases = {
             "valid_customer": "valid_user",
             "bad_signature": "tampered_sig",
         }
         mapped_preset = preset_aliases.get(payload.preset, payload.preset)
-        minted = mint_demo_jwt(preset=mapped_preset, session=session)
+        if mapped_preset != "alg_none" and not project_can_mint_hs256(jwt_config):
+            raise HTTPException(
+                status_code=400,
+                detail="This project verifies RS256 tokens. Paste a real access token to test it. Preset tokens can only be minted for an HS256 shared secret.",
+            )
+        minted = mint_demo_jwt(
+            preset=mapped_preset,
+            session=session,
+            jwt_config=jwt_config,
+            upstream_id=payload.upstream_id,
+        )
         token_str = minted["token"]
     else:
         token_str = payload.token or ""
@@ -288,6 +311,7 @@ def test_or_mint_jwt(
         session=session,
         expected_role=payload.expected_role,
         expected_scope=payload.expected_scope,
+        jwt_config=jwt_config,
     )
     return {
         **res,
@@ -303,19 +327,13 @@ def test_jwt_token(
     session: Session = Depends(get_session),
     _user: User = Depends(get_current_user),
 ):
+    jwt_config = _project_jwt_config_for_request(session, _user, payload.upstream_id)
     return validate_jwt_checklist(
         token=payload.token,
         session=session,
         expected_role=payload.expected_role,
         expected_scope=payload.expected_scope,
-        jwt_config=(
-            get_upstream_jwt_config(
-                session,
-                require_visible_project(session, _user, payload.upstream_id).id,
-            )
-            if payload.upstream_id is not None
-            else None
-        ),
+        jwt_config=jwt_config,
     )
 
 
@@ -323,8 +341,14 @@ def test_jwt_token(
 def mint_jwt_for_testing(
     payload: TokenMintRequest,
     session: Session = Depends(get_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
+    jwt_config = _project_jwt_config_for_request(session, user, payload.upstream_id)
+    if payload.preset != "alg_none" and not project_can_mint_hs256(jwt_config):
+        raise HTTPException(
+            status_code=400,
+            detail="This project verifies RS256 tokens. Paste a real access token to test it. Preset tokens can only be minted for an HS256 shared secret.",
+        )
     minted = mint_demo_jwt(
         sub=payload.sub,
         email=payload.email,
@@ -332,8 +356,10 @@ def mint_jwt_for_testing(
         scopes=payload.scopes,
         preset=payload.preset,
         session=session,
+        jwt_config=jwt_config,
+        upstream_id=payload.upstream_id,
     )
-    validation = validate_jwt_checklist(minted["token"], session)
+    validation = validate_jwt_checklist(minted["token"], session, jwt_config=jwt_config)
     return {
         **minted,
         "validation": validation,
@@ -441,7 +467,7 @@ def revoke_api_key(
 
 class RevokeJtiInput(BaseModel):
     jti: str
-    user_sub: str = "user-101"
+    user_sub: Optional[str] = None
     reason: str = "Manual token revocation via Auth Center"
 
 
@@ -451,12 +477,15 @@ def revoke_jti_token(
     session: Session = Depends(get_session),
     user: User = Depends(require_roles(["admin", "analyst", "developer"])),
 ):
-    existing = session.exec(select(RevokedToken).where(RevokedToken.jti == payload.jti)).first()
+    jti, extracted_sub = extract_revocation_identity(payload.jti)
+    if not jti:
+        raise HTTPException(status_code=400, detail="Enter a jti claim or paste the full JWT")
+    existing = find_revoked_token(session, jti)
     if existing:
-        return {"status": "already_revoked", "jti": payload.jti}
+        return {"status": "already_revoked", "jti": jti}
     entry = RevokedToken(
-        jti=payload.jti,
-        user_sub=payload.user_sub,
+        jti=jti,
+        user_sub=payload.user_sub or extracted_sub,
         reason=payload.reason,
         revoked_by=user.email,
     )

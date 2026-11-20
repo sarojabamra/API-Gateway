@@ -24,7 +24,7 @@ export const AuthSettingsPage: React.FC = () => {
   const fetchAll = async () => {
     try {
       const [cfg, keys, rev, projectCfg] = await Promise.all([
-        apiFetch('/auth/jwt-config'),
+        apiFetch(selectedProjectId ? `/auth/jwt-config?upstream_id=${selectedProjectId}` : '/auth/jwt-config'),
         apiFetch('/auth/api-keys'),
         apiFetch('/auth/revoked-tokens'),
         selectedProjectId
@@ -46,15 +46,13 @@ export const AuthSettingsPage: React.FC = () => {
 
   useEffect(() => {
     fetchAll();
-    // Mint a default valid user token on first load so the Token Tester is ready immediately
-    handleMintPreset('valid_user');
   }, [selectedProjectId]);
 
   const handleMintPreset = async (preset: string) => {
     try {
       const res = await apiFetch('/auth/token-mint', {
         method: 'POST',
-        body: JSON.stringify({ preset }),
+        body: JSON.stringify({ preset, upstream_id: selectedProjectId }),
       });
       setTestToken(res.token);
       setTestResult(res.validation);
@@ -95,6 +93,7 @@ export const AuthSettingsPage: React.FC = () => {
       });
       setProjectJwtConfig(res);
       setProjectVerificationKey('');
+      await fetchAll();
       addToast({
         title: 'Project JWT Verification Saved',
         message: `${selectedProjectName} tokens will now be verified with this project's signing configuration.`,
@@ -149,7 +148,6 @@ export const AuthSettingsPage: React.FC = () => {
         method: 'POST',
         body: JSON.stringify({
           jti: revokeJtiInput.trim(),
-          user_sub: 'user-101',
           reason: 'Manual JTI revocation in Auth Center',
         }),
       });
@@ -405,32 +403,41 @@ export const AuthSettingsPage: React.FC = () => {
             <ShieldCheck className="w-4 h-4 text-emerald-400" />
             <h3 className="text-sm font-bold text-white">Pinned JWT Validation Config</h3>
           </div>
+          <p className="text-[11px] text-slate-400">
+            {jwtConfig.source === 'project'
+              ? `Checks used for ${selectedProjectName || 'this project'}.`
+              : 'This project has no saved key yet, so checks use the built-in gateway default.'}
+          </p>
           <div className="space-y-2 font-mono">
-            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between">
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between gap-3">
+              <span className="text-slate-400">Verification key:</span>
+              <span className="text-emerald-400 font-bold text-right">{jwtConfig.key_label || 'Built-in gateway secret'}</span>
+            </div>
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between gap-3">
               <span className="text-slate-400">Allowed Algorithms:</span>
               <span className="text-emerald-400 font-bold">
                 {(jwtConfig.allowed_algorithms || ['HS256']).join(', ')}
               </span>
             </div>
-            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between">
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between gap-3">
               <span className="text-slate-400">Reject alg=none:</span>
               <span className="text-emerald-400 font-bold">STRICTLY ENFORCED</span>
             </div>
-            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between">
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between gap-3">
               <span className="text-slate-400">Required Issuer (iss):</span>
-              <span className="text-cyan-300">{jwtConfig.issuer}</span>
+              <span className="text-cyan-300 text-right break-all">{jwtConfig.issuer || 'Not required'}</span>
             </div>
-            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between">
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between gap-3">
               <span className="text-slate-400">Required Audience (aud):</span>
-              <span className="text-cyan-300">{jwtConfig.audience}</span>
+              <span className="text-cyan-300 text-right break-all">{jwtConfig.audience || 'Not required'}</span>
             </div>
-            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between">
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between gap-3">
+              <span className="text-slate-400">Require jti:</span>
+              <span className="text-slate-200">{jwtConfig.require_jti ? 'Yes' : 'No'}</span>
+            </div>
+            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between gap-3">
               <span className="text-slate-400">Clock Skew Leeway:</span>
-              <span className="text-slate-200">{jwtConfig.leeway_seconds} seconds</span>
-            </div>
-            <div className="p-2.5 rounded bg-slate-950 border border-slate-800 flex justify-between">
-              <span className="text-slate-400">Trusted Key IDs (kid):</span>
-              <span className="text-slate-200">{(jwtConfig.trusted_kids || []).join(', ')}</span>
+              <span className="text-slate-200">{jwtConfig.leeway_seconds ?? 10} seconds</span>
             </div>
           </div>
         </div>
@@ -517,6 +524,9 @@ export const AuthSettingsPage: React.FC = () => {
             <Ban className="w-4 h-4 text-rose-400" />
             <h3 className="text-sm font-bold text-white">Revoked JWT (`jti`) Blacklist</h3>
           </div>
+          <p className="text-[11px] text-slate-400">
+            Paste a jti or a full access token. That token fails the JWT check for every project.
+          </p>
 
           {canMutate(['admin', 'analyst', 'developer']) && (
             <form onSubmit={handleRevokeJti} className="flex gap-2">
@@ -524,7 +534,7 @@ export const AuthSettingsPage: React.FC = () => {
                 type="text"
                 value={revokeJtiInput}
                 onChange={(e) => setRevokeJtiInput(e.target.value)}
-                placeholder="Enter token jti to revoke..."
+                placeholder="jti or full JWT"
                 className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-white font-mono"
               />
               <button

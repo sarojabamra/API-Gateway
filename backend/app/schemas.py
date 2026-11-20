@@ -53,6 +53,7 @@ class TokenMintRequest(BaseModel):
     role: str = "user"
     scopes: List[str] = ["read:products", "read:orders", "write:orders"]
     preset: str = "valid_user"  # valid_user, valid_admin, expired, alg_none, tampered_sig, wrong_issuer, revoked_jti
+    upstream_id: Optional[int] = None
 
 
 class PolicyUpdate(BaseModel):

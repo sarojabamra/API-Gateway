@@ -166,6 +166,96 @@ def _b64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("utf-8").rstrip("=")
 
 
+def _normalize_jti(value: Any) -> str:
+    return str(value or "").strip().strip('"').strip("'").strip()
+
+
+def extract_revocation_identity(raw: str) -> Tuple[str, Optional[str]]:
+    """Accept a raw jti or a full Bearer JWT and return (jti, sub)."""
+    text = _normalize_jti(raw)
+    if text.lower().startswith("bearer "):
+        text = _normalize_jti(text[7:])
+    parts = text.split(".")
+    if len(parts) == 3 and parts[1]:
+        try:
+            payload = json.loads(_b64url_decode(parts[1]).decode("utf-8"))
+            if isinstance(payload, dict) and payload.get("jti"):
+                sub = payload.get("sub")
+                return _normalize_jti(payload.get("jti")), (str(sub).strip() if sub else None)
+        except Exception:
+            pass
+    return text, None
+
+
+def _stored_jti_aliases(stored: str) -> set:
+    aliases = set()
+    direct = _normalize_jti(stored)
+    if direct:
+        aliases.add(direct)
+    extracted, _sub = extract_revocation_identity(stored)
+    if extracted:
+        aliases.add(extracted)
+    return aliases
+
+
+def find_revoked_token(session: Session, jti: Any) -> Optional[RevokedToken]:
+    """Match a token jti against the blacklist, including rows that stored a full JWT."""
+    target = _normalize_jti(jti)
+    if not target:
+        return None
+    direct = session.exec(select(RevokedToken).where(RevokedToken.jti == target)).first()
+    if direct:
+        return direct
+    for row in session.exec(select(RevokedToken)).all():
+        if target in _stored_jti_aliases(row.jti):
+            return row
+    return None
+
+
+def describe_active_jwt_config(jwt_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Pinned validation view for one project, or the built-in gateway default."""
+    if jwt_config:
+        key = str(jwt_config.get("verification_key") or "")
+        algorithms = list(jwt_config.get("allowed_algorithms") or ["HS256"])
+        uses_rsa = any(str(alg).upper() == "RS256" for alg in algorithms) or "BEGIN " in key
+        return {
+            "source": "project",
+            "allowed_algorithms": algorithms,
+            "issuer": jwt_config.get("issuer") or None,
+            "audience": jwt_config.get("audience") or None,
+            "leeway_seconds": jwt_config.get("leeway_seconds", 10),
+            "require_jti": bool(jwt_config.get("require_jti", False)),
+            "reject_alg_none": True,
+            "key_label": "Project RSA public key" if uses_rsa else "Project shared secret",
+            "trusted_kids": ["project-verification-key"],
+        }
+    return {
+        "source": "gateway_default",
+        "allowed_algorithms": list(jwt_runtime_config.allowed_algorithms),
+        "issuer": jwt_runtime_config.issuer,
+        "audience": jwt_runtime_config.audience,
+        "leeway_seconds": jwt_runtime_config.leeway_seconds,
+        "require_jti": jwt_runtime_config.require_jti,
+        "reject_alg_none": jwt_runtime_config.reject_alg_none,
+        "key_label": "Built-in gateway secret",
+        "trusted_kids": list(jwt_runtime_config.trusted_kids.keys()),
+    }
+
+
+def project_can_mint_hs256(jwt_config: Optional[Dict[str, Any]]) -> bool:
+    """True when this process can sign a preset token the project verifier will accept."""
+    if not jwt_config:
+        return True
+    key = str(jwt_config.get("verification_key") or "").strip()
+    algorithms = [str(alg).upper() for alg in (jwt_config.get("allowed_algorithms") or [])]
+    return bool(
+        key
+        and "BEGIN " not in key
+        and key.lower() != "firebase"
+        and (not algorithms or "HS256" in algorithms)
+    )
+
+
 def _fail_step(
     steps: List[Dict[str, Any]],
     step_num: int,
@@ -435,7 +525,7 @@ def validate_jwt_checklist(
     })
 
     # Step 7: JTI presence and revocation blacklist check
-    jti = payload.get("jti")
+    jti = _normalize_jti(payload.get("jti"))
     if require_jti and not jti:
         return _fail_step(
             steps, 7, "JTI Presence & Revocation Blacklist Check",
@@ -445,7 +535,7 @@ def validate_jwt_checklist(
         )
 
     if jti:
-        revoked = session.exec(select(RevokedToken).where(RevokedToken.jti == str(jti))).first()
+        revoked = find_revoked_token(session, jti)
         if revoked:
             return _fail_step(
                 steps, 7, "JTI Presence & Revocation Blacklist Check",
